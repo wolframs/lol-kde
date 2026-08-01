@@ -146,6 +146,29 @@ class TestKnsrc(unittest.TestCase):
 
     def test_unknown_category_is_not_found(self):
         self.assertFalse(knsrc.load("no-such-category-xyz").found)
+class TestPointerEquivalence(unittest.TestCase):
+    """Colour schemes are named two ways; that is not drift."""
+
+    def test_colour_scheme_punctuation_is_not_drift(self):
+        rows = resolve.audit(
+            declared={("kdeglobals", "General"): {"ColorScheme": "Sweet-Ambar-Blue"}},
+            live={("kdeglobals", "General"): {"ColorScheme": "SweetAmbarBlue"}},
+        )
+        self.assertEqual(rows[0].note, "")
+
+    def test_genuinely_different_scheme_is_still_drift(self):
+        rows = resolve.audit(
+            declared={("kdeglobals", "General"): {"ColorScheme": "Sweet-Ambar-Blue"}},
+            live={("kdeglobals", "General"): {"ColorScheme": "Stone"}},
+        )
+        self.assertIn("Sweet-Ambar-Blue", rows[0].note)
+
+    def test_normalisation_does_not_leak_to_other_kinds(self):
+        rows = resolve.audit(
+            declared={("kdeglobals", "Icons"): {"Theme": "candy-icons"}},
+            live={("kdeglobals", "Icons"): {"Theme": "candyicons"}},
+        )
+        self.assertIn("candy-icons", rows[0].note)
 
 
 if __name__ == "__main__":

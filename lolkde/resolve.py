@@ -305,6 +305,21 @@ UNSET = "UNSET"
 DRIFT = "DRIFT"
 
 
+def _same_pointer(kind: str, a: str, b: str) -> bool:
+    """Do two pointer values name the same component?
+
+    Colour schemes are referred to by both their file stem and their internal
+    Name=, which differ in punctuation (SweetAmbarBlue vs Sweet-Ambar-Blue).
+    Comparing them raw reports drift where none exists.
+    """
+    if a == b:
+        return True
+    if kind == "color-scheme":
+        norm = lambda s: s.lower().replace("-", "").replace(" ", "").replace("_", "")
+        return norm(a) == norm(b)
+    return False
+
+
 @dataclass
 class AuditRow:
     """One component, compared between what a theme declares and what is live."""
@@ -355,10 +370,12 @@ def audit(
             continue
 
         resolution = resolver(live_value) if live_value else None
+        kind = resolution.kind if resolution else ""
         note = ""
         if declared_value and not live_value:
             note = f"theme declares {declared_value!r} but nothing set it; KDE default in use"
-        elif declared_value and live_value and declared_value != live_value:
+        elif (declared_value and live_value
+              and not _same_pointer(kind, declared_value, live_value)):
             note = f"theme declares {declared_value!r}; changed since"
 
         rows.append(AuditRow(

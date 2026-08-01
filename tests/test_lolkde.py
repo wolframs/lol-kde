@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lolkde import kconfig, knsrc, manifest, resolve  # noqa: E402
+from lolkde import banner, kconfig, knsrc, manifest, resolve  # noqa: E402
 
 
 class TestManifestParsing(unittest.TestCase):
@@ -146,6 +146,8 @@ class TestKnsrc(unittest.TestCase):
 
     def test_unknown_category_is_not_found(self):
         self.assertFalse(knsrc.load("no-such-category-xyz").found)
+
+
 class TestPointerEquivalence(unittest.TestCase):
     """Colour schemes are named two ways; that is not drift."""
 
@@ -169,6 +171,42 @@ class TestPointerEquivalence(unittest.TestCase):
             live={("kdeglobals", "Icons"): {"Theme": "candyicons"}},
         )
         self.assertIn("candy-icons", rows[0].note)
+
+
+class TestBanner(unittest.TestCase):
+    def test_narrow_terminal_falls_back_to_one_line(self):
+        out = banner.render(width_available=20, color=False)
+        self.assertIn(banner.PLAIN, out)
+        self.assertNotIn("\u250c", out)
+        self.assertEqual(len(out.splitlines()), 1)
+
+    def test_wide_terminal_gets_the_notice(self):
+        self.assertIn("\u250c", banner.render(width_available=200, color=False))
+
+    def test_box_is_rectangular(self):
+        lines = banner.render(width_available=200, color=False).splitlines()
+        self.assertEqual(len({len(line) for line in lines}), 1)
+        self.assertTrue(all(line[0] in "\u250c\u2502\u2514" for line in lines))
+        self.assertTrue(all(line[-1] in "\u2510\u2502\u2518" for line in lines))
+
+    def test_declared_width_matches_reality(self):
+        lines = banner.render(width_available=200, color=False).splitlines()
+        self.assertEqual(banner.width(), len(lines[0]))
+
+    def test_no_colour_means_no_escapes(self):
+        self.assertNotIn("\033", banner.render(width_available=200, color=False))
+
+    def test_every_remark_branch_is_reachable_and_singular_safe(self):
+        cases = [(6, 0, 0, 0), (3, 0, 3, 0), (5, 1, 0, 0),
+                 (2, 0, 0, 2), (0, 0, 0, 0), (5, 0, 1, 0), (5, 0, 0, 1)]
+        seen = {banner.closing_remark(*c) for c in cases}
+        # All seven differ: the branches are distinct, and singular/plural
+        # wording makes 1-unset and 3-unset different lines too.
+        self.assertEqual(len(seen), len(cases))
+        for c in cases:
+            line = banner.closing_remark(*c)
+            self.assertTrue(line.endswith("."))
+            self.assertNotIn("!", line)               # the joke is politeness
 
 
 if __name__ == "__main__":

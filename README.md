@@ -1,5 +1,19 @@
 # lol-kde
 
+```
+┌───────────────────────────────────────────────────────────┐
+│  ╻  ┏━┓╻     ╻┏ ╺┳┓┏━╸                                    │
+│  ┃  ┃ ┃┃  ╺━╸┣┻┓ ┃┃┣╸                                     │
+│  ┗━╸┗━┛┗━╸   ╹ ╹╺┻┛┗━╸                                    │
+│                                                           │
+│  NOTICE                                                   │
+│                                                           │
+│  A Global Theme is a list of six things you may or may    │
+│  not own.  This program determines which.  We regret the  │
+│  necessity.                                               │
+└───────────────────────────────────────────────────────────┘
+```
+
 **KDE global themes declare their dependencies. Nothing installs them. This does.**
 
 A Plasma "Global Theme" is not a theme. It is a small text file of pointers to six
@@ -52,6 +66,7 @@ lol-kde check <theme>               # resolve one theme's pointers
 lol-kde install <theme>             # fetch its missing dependencies from the KDE Store
 lol-kde install <theme> --dry-run   # resolve and report, download nothing
 lol-kde apply <theme>               # apply, then verify it actually took
+lol-kde why                         # what a Global Theme actually is
 ```
 
 `doctor` compares the live configuration against what the applied theme declares:

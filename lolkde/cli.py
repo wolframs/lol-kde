@@ -12,6 +12,9 @@ import shutil
 import subprocess
 import sys
 
+import shutil as _shutil
+
+from . import banner
 from . import install as installer
 from . import manifest, resolve
 from .resolve import DEGRADED, MISSING, OK
@@ -117,6 +120,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         parts.append(f"{broken} missing")
     print(f"\n{', '.join(parts)}")
 
+    print(_paint(banner.closing_remark(counts[OK], degraded, unset, broken), "2"))
+
     if broken or degraded or unset:
         if active:
             print(f"\nRepair: lol-kde install {active}   "
@@ -126,6 +131,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         else:
             print("\nNo global theme is set, so there is nothing to repair against.")
     return 1 if broken else 0
+
+
+def cmd_why(args: argparse.Namespace) -> int:
+    """Explain the architecture, since nothing else will."""
+    print(banner.render(_shutil.get_terminal_size((80, 24)).columns, _COLOR))
+    print()
+    print(banner.WHY)
+    return 0
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -249,10 +262,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="lol-kde",
         description="Resolve, verify and repair KDE global theme dependencies.",
+        epilog="lol-kde why  explains what a Global Theme actually is.",
     )
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="show resolved paths and extra detail")
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command")
 
     doctor = sub.add_parser("doctor", help="audit the currently applied configuration")
     doctor.set_defaults(func=cmd_doctor)
@@ -273,11 +287,21 @@ def build_parser() -> argparse.ArgumentParser:
     apply_cmd = sub.add_parser("apply", help="apply a global theme, then verify it")
     apply_cmd.add_argument("theme")
     apply_cmd.set_defaults(func=cmd_apply)
+
+    why = sub.add_parser("why", help="explain how KDE theming is actually layered")
+    why.set_defaults(func=cmd_why)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if not getattr(args, "func", None):
+        # Bare invocation: introduce yourself, then get out of the way.
+        print(banner.render(_shutil.get_terminal_size((80, 24)).columns, _COLOR))
+        print()
+        parser.print_help()
+        return 0
     try:
         return args.func(args)
     except KeyboardInterrupt:

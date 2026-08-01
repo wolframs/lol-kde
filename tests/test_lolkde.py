@@ -116,6 +116,14 @@ class TestKvantumMatching(unittest.TestCase):
             self.skipTest("kvantum not installed")
         self.assertNotIn("not part of", result.detail)
 
+    def test_reports_the_opacity_knob_not_just_the_boolean(self):
+        result = resolve.widget_style("kvantum-dark")
+        if result.status != resolve.OK or "Kvantum theme" not in result.detail:
+            self.skipTest("kvantum not configured on this machine")
+        # translucent_windows=true with reduce_window_opacity=0 renders fully
+        # opaque. Reporting only the boolean is how an entire evening was lost.
+        self.assertIn("reduce_window_opacity", result.detail)
+
     def test_non_engine_styles_ignore_the_expectation(self):
         self.assertEqual(resolve.widget_style("fusion", "Anything").status, resolve.OK)
 

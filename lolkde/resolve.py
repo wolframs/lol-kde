@@ -125,16 +125,25 @@ def widget_style(name: str, expect: str = "") -> Resolution:
                     f"{expect!r}; window interiors render that other theme",
                     plugin,
                 )
-            # Variant flags live in the Kvantum config, not the SVG. A theme
-            # shipping both Foo and Foo-solid differs only by this line.
-            for base_dir in [paths.config_home() / "Kvantum"] + [
-                    d / "Kvantum" for d in paths.data_dirs()]:
-                cfg = base_dir / theme / f"{theme}.kvconfig"
-                if cfg.is_file():
-                    value = kconfig.get(cfg, "%General", "translucent_windows")
-                    if value is not None:
-                        r.detail += (f", translucent_windows={value}")
-                    break
+
+        # Translucency lives in the Kvantum config, not in any SVG.
+        # reduce_window_opacity is the knob that decides; translucent_windows
+        # merely enables the mechanism and is true on themes that render fully
+        # opaque. Layan ships true/0. Reported unconditionally: this is the
+        # single number that answers "why is nothing translucent".
+        for base_dir in [paths.config_home() / "Kvantum"] + [
+                d / "Kvantum" for d in paths.data_dirs()]:
+            cfg = base_dir / theme / f"{theme}.kvconfig"
+            if cfg.is_file():
+                opacity = kconfig.get(cfg, "%General", "reduce_window_opacity")
+                enabled = kconfig.get(cfg, "%General", "translucent_windows")
+                if opacity is not None:
+                    r.detail += f", reduce_window_opacity={opacity}"
+                    if opacity.strip().rstrip("%") in ("", "0"):
+                        r.detail += " (windows will be fully opaque)"
+                elif enabled is not None:
+                    r.detail += f", translucent_windows={enabled}"
+                break
     return r
 
 

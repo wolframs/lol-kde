@@ -464,7 +464,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="show resolved paths and extra detail")
-    sub = parser.add_subparsers(dest="command")
+
+    # Accept -v after the subcommand too: "lol-kde doctor -v" is what people
+    # actually type, and argparse only allows it before by default.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("-v", "--verbose", action="store_true",
+                        help=argparse.SUPPRESS)
+    sub = parser.add_subparsers(dest="command", parser_class=lambda **kw:
+                                argparse.ArgumentParser(parents=[common], **kw))
 
     doctor = sub.add_parser("doctor", help="audit the currently applied configuration")
     doctor.set_defaults(func=cmd_doctor)

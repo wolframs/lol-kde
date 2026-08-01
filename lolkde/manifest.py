@@ -40,11 +40,24 @@ class GlobalTheme:
 
 
 def find(name: str) -> Path | None:
-    """Locate an installed global theme package by directory name."""
-    for base in paths.data_dirs():
-        candidate = base / "plasma/look-and-feel" / name
+    """Locate an installed global theme package.
+
+    Matches case-insensitively, and ignores punctuation differences, because
+    nobody types 'Sweet-Ambar-Blue' with the capitals in the right places and
+    there is no reason to make them.
+    """
+    def norm(value: str) -> str:
+        return value.lower().replace("-", "").replace("_", "").replace(" ", "")
+
+    exact = [base / "plasma/look-and-feel" / name for base in paths.data_dirs()]
+    for candidate in exact:
         if candidate.is_dir():
             return candidate
+
+    wanted = norm(name)
+    for directory, path in list_installed():
+        if norm(directory) == wanted:
+            return path
     return None
 
 
@@ -77,7 +90,9 @@ def load(name: str) -> GlobalTheme:
     if path is None:
         raise FileNotFoundError(f"global theme {name!r} is not installed")
 
-    theme = GlobalTheme(name=name, path=path, display_name=name)
+    # Use the on-disk directory name, not what the user typed: our own lookup
+    # is case-insensitive but plasma-apply-lookandfeel is not.
+    theme = GlobalTheme(name=path.name, path=path, display_name=path.name)
 
     defaults = path / "contents/defaults"
     if defaults.is_file():

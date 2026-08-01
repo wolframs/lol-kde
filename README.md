@@ -120,6 +120,19 @@ matches on the internal `Name=` field, as KDE does.
 **Cursors and icons have six search paths**, including the legacy `~/.icons`.
 Checking only `~/.local/share/icons` will tell you something is missing when it is not.
 
+**A global theme's settings are not in `~/.config/kdeglobals`.** Applying one writes
+to a `~/.config/kdedefaults/` layer, so explicit user choices in `~/.config` still
+override the theme and "reset to defaults" remains possible. Read only the user
+layer and a perfectly applied theme looks entirely unset. `lol-kde` reads the whole
+cascade in KDE's own order:
+
+```
+/usr/share/<distro>-default-settings/  ->  /etc/xdg  ->  ~/.config/kdedefaults  ->  ~/.config
+```
+
+This also explains why `kwriteconfig6` can exit 0 and appear to write nothing: if the
+value already matches the inherited default, KConfig does not store it again.
+
 ## How installation works
 
 Install targets are not hardcoded. `lol-kde` reads the same `.knsrc` files KDE reads

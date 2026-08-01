@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lolkde import banner, kconfig, knsrc, manifest, resolve  # noqa: E402
+from lolkde import banner, kconfig, knsrc, manifest, paths, resolve  # noqa: E402
 
 
 class TestManifestParsing(unittest.TestCase):
@@ -207,6 +207,53 @@ class TestBanner(unittest.TestCase):
             line = banner.closing_remark(*c)
             self.assertTrue(line.endswith("."))
             self.assertNotIn("!", line)               # the joke is politeness
+
+
+class TestConfigCascade(unittest.TestCase):
+    """A global theme's settings live in ~/.config/kdedefaults, not ~/.config."""
+
+    def test_layers_are_lowest_priority_first(self):
+        layers = paths.config_layers()
+        self.assertEqual(layers[-1], paths.config_home())
+        self.assertIn(paths.config_home() / "kdedefaults", layers)
+        self.assertLess(layers.index(paths.config_home() / "kdedefaults"),
+                        layers.index(paths.config_home()))
+
+    def test_kdedefaults_included_even_if_absent_from_env(self):
+        import os
+        old = os.environ.get("XDG_CONFIG_DIRS")
+        os.environ["XDG_CONFIG_DIRS"] = "/etc/xdg"
+        try:
+            self.assertIn(paths.config_home() / "kdedefaults", paths.config_layers())
+        finally:
+            if old is None:
+                del os.environ["XDG_CONFIG_DIRS"]
+            else:
+                os.environ["XDG_CONFIG_DIRS"] = old
+
+
+class TestThemeLookup(unittest.TestCase):
+    def test_lookup_ignores_case_and_punctuation(self):
+        names = [n for n, _ in manifest.list_installed()]
+        if not names:
+            self.skipTest("no global themes installed")
+        target = names[0]
+        for variant in (target.lower(), target.upper(), target.replace("-", "")):
+            self.assertIsNotNone(manifest.find(variant), variant)
+
+    def test_unknown_theme_still_returns_none(self):
+        self.assertIsNone(manifest.find("definitely-not-a-theme-xyz"))
+
+    def test_loaded_name_is_the_on_disk_name_not_the_typed_one(self):
+        names = [n for n, _ in manifest.list_installed()]
+        if not names:
+            self.skipTest("no global themes installed")
+        target = next((n for n in names if n.lower() != n), None)
+        if target is None:
+            self.skipTest("no mixed-case theme installed to test against")
+        # plasma-apply-lookandfeel is case-sensitive; we must hand it the
+        # real directory name even when the user typed something else.
+        self.assertEqual(manifest.load(target.lower()).name, target)
 
 
 if __name__ == "__main__":

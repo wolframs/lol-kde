@@ -409,18 +409,13 @@ def audit(
 
 
 def live_settings() -> dict[tuple[str, str], dict[str, str]]:
-    """Read the currently applied configuration off disk."""
-    wanted = [
-        ("kdeglobals", "KDE"), ("kdeglobals", "General"), ("kdeglobals", "Icons"),
-        ("kcminputrc", "Mouse"), ("plasmarc", "Theme"), ("ksplashrc", "KSplash"),
-        ("kwinrc", "org.kde.kdecoration3"), ("kwinrc", "org.kde.kdecoration2"),
-    ]
+    """Read the configuration KDE actually resolves, across every layer.
+
+    Not just ~/.config: a global theme's settings live in
+    ~/.config/kdedefaults/, so reading the user layer alone reports a working
+    theme as completely unset.
+    """
     out: dict[tuple[str, str], dict[str, str]] = {}
-    for config_file, group in wanted:
-        path = paths.CONFIG_FILES.get(config_file)
-        if not path:
-            continue
-        parser = kconfig.read_ini(path)
-        if parser.has_section(group):
-            out[(config_file, group)] = {k: v.strip() for k, v in parser.items(group)}
+    for config_file in ("kdeglobals", "kcminputrc", "plasmarc", "ksplashrc", "kwinrc"):
+        out.update(kconfig.read_cascade(config_file))
     return out

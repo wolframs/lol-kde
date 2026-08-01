@@ -27,6 +27,37 @@ def read_ini(path: Path) -> configparser.ConfigParser:
     return parser
 
 
+def read_cascade(filename: str) -> dict[tuple[str, str], dict[str, str]]:
+    """Merge one config file across every layer KDE reads it from.
+
+    Later layers win, matching KDE's own resolution. Returns
+    {(filename, group): {key: value}} so callers can treat it like a manifest.
+    """
+    from . import paths
+
+    merged: dict[tuple[str, str], dict[str, str]] = {}
+    for directory in paths.config_layers():
+        parser = read_ini(directory / filename)
+        for group in parser.sections():
+            bucket = merged.setdefault((filename, group), {})
+            for key, value in parser.items(group):
+                bucket[key] = value.strip()
+    return merged
+
+
+def origin(filename: str, group: str, key: str) -> Path | None:
+    """Which layer a resolved value actually came from. For -v output."""
+    from . import paths
+
+    found = None
+    for directory in paths.config_layers():
+        path = directory / filename
+        parser = read_ini(path)
+        if parser.has_option(group, key):
+            found = path
+    return found
+
+
 def get(path: Path, group: str, key: str) -> str | None:
     parser = read_ini(path)
     if parser.has_option(group, key):

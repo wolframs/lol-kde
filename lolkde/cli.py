@@ -7,12 +7,11 @@ things that are broken. Nothing here prints a wall of text at you.
 from __future__ import annotations
 
 import argparse
+import difflib
 import os
 import shutil
 import subprocess
 import sys
-
-import shutil as _shutil
 
 from . import banner
 from . import install as installer
@@ -135,7 +134,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 def cmd_why(args: argparse.Namespace) -> int:
     """Explain the architecture, since nothing else will."""
-    print(banner.render(_shutil.get_terminal_size((80, 24)).columns, _COLOR))
+    print(banner.render(shutil.get_terminal_size((80, 24)).columns, _COLOR))
     print()
     print(banner.WHY)
     return 0
@@ -164,9 +163,15 @@ def _load_or_fail(name: str) -> manifest.GlobalTheme | None:
         return manifest.load(name)
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
-        available = ", ".join(n for n, _ in manifest.list_installed()[:6])
-        if available:
-            print(f"installed: {available} ...", file=sys.stderr)
+        names = [n for n, _ in manifest.list_installed()]
+        close = difflib.get_close_matches(name, names, n=3, cutoff=0.4)
+        if close:
+            print(f"\ndid you mean:  {'  '.join(close)}", file=sys.stderr)
+        if names:
+            # Print all of them. A truncated list is not a list.
+            print(f"\ninstalled ({len(names)}):", file=sys.stderr)
+            for installed in names:
+                print(f"  {installed}", file=sys.stderr)
         return None
 
 
@@ -251,11 +256,22 @@ def cmd_apply(args: argparse.Namespace) -> int:
     completed = subprocess.run([tool, "--apply", theme.name], text=True)
     if completed.returncode != 0:
         return completed.returncode
+
     print(f"\nApplied {theme.display_name}. Verifying:")
-    results = resolve.resolve_settings(resolve.live_settings())
-    broken, degraded = _print_resolutions(results, args.verbose)
-    print(f"\n{_summary(broken, degraded, len(results))}")
-    return 1 if broken else 0
+    rows = resolve.audit(theme.settings, resolve.live_settings())
+    if not rows:
+        # Never report "0/0 ok". Nothing to check is a failure, not a pass.
+        print("  error: the theme applied but not one of its pointers is "
+              "readable afterwards.", file=sys.stderr)
+        print("  This should not happen; run 'lol-kde doctor -v' and report it.",
+              file=sys.stderr)
+        return 1
+
+    counts = _print_audit(rows, args.verbose)
+    broken, degraded, unset = counts[MISSING], counts[DEGRADED], counts[resolve.UNSET]
+    print(f"\n{counts[OK]}/{len(rows)} ok")
+    print(_paint(banner.closing_remark(counts[OK], degraded, unset, broken), "2"))
+    return 1 if broken or unset else 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -298,7 +314,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if not getattr(args, "func", None):
         # Bare invocation: introduce yourself, then get out of the way.
-        print(banner.render(_shutil.get_terminal_size((80, 24)).columns, _COLOR))
+        print(banner.render(shutil.get_terminal_size((80, 24)).columns, _COLOR))
         print()
         parser.print_help()
         return 0

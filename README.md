@@ -67,6 +67,8 @@ lol-kde install <theme>             # fetch its missing dependencies from the KD
 lol-kde install <theme> --dry-run   # resolve and report, download nothing
 lol-kde apply <theme>               # apply, then verify it actually took
 lol-kde why                         # what a Global Theme actually is
+lol-kde legacy                      # packages using pre-5.19 metadata.desktop
+lol-kde legacy --remove             # delete the orphaned ones (never the needed ones)
 ```
 
 `doctor` compares the live configuration against what the applied theme declares:
@@ -147,6 +149,22 @@ rather than trusted, because uploads routinely disagree with their category's
 declared `Uncompress` mode.
 
 Existing content is never overwritten without `--force`.
+
+## Legacy metadata
+
+Plasma styles that ship `metadata.desktop` without `metadata.json` predate Plasma
+5.19. They still load, but the *live reload* path through them is poorly exercised:
+plasmashell has been observed aborting inside `KSvg::FrameSvg::mask()` while
+reapplying one. The crash is self-healing (systemd restarts it) and settings
+survive, but `apply` now warns first, and logging out avoids it entirely.
+
+`lol-kde legacy` lists them. `--remove` deletes only packages that are all three of:
+under your own data dir, not currently applied, and **not referenced by any other
+installed global theme**. A style named `Sweet` is needed by the global theme named
+`Sweet` -- those are two different packages, and deleting the first breaks the second.
+
+Aurorae window decorations are deliberately excluded: `metadata.desktop` is their
+normal format, not a legacy marker.
 
 ## Limitations
 

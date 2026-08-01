@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lolkde import banner, kconfig, knsrc, manifest, paths, resolve  # noqa: E402
+from lolkde import banner, kconfig, knsrc, legacy, manifest, paths, resolve  # noqa: E402
 
 
 class TestManifestParsing(unittest.TestCase):
@@ -254,6 +254,41 @@ class TestThemeLookup(unittest.TestCase):
         # plasma-apply-lookandfeel is case-sensitive; we must hand it the
         # real directory name even when the user typed something else.
         self.assertEqual(manifest.load(target.lower()).name, target)
+
+
+class TestLegacy(unittest.TestCase):
+    """The remover must never delete something still needed."""
+
+    def _pkg(self, **kw):
+        defaults = dict(kind="Plasma style", name="X",
+                        path=paths.data_home() / "plasma/desktoptheme/X")
+        return legacy.LegacyPackage(**{**defaults, **kw})
+
+    def test_active_package_is_not_removable(self):
+        self.assertFalse(self._pkg(active=True).removable)
+
+    def test_referenced_package_is_not_removable(self):
+        self.assertFalse(self._pkg(referenced_by=("Sweet",)).removable)
+
+    def test_system_package_is_not_removable(self):
+        self.assertFalse(self._pkg(path=Path("/usr/share/plasma/desktoptheme/X")).removable)
+
+    def test_orphan_user_package_is_removable(self):
+        self.assertTrue(self._pkg().removable)
+
+    def test_aurorae_is_not_treated_as_legacy(self):
+        # metadata.desktop is Aurorae's normal format, not a legacy marker.
+        self.assertNotIn("aurorae/themes", legacy.PACKAGE_KINDS)
+        self.assertNotIn("aurorae", " ".join(legacy.PACKAGE_KINDS))
+
+    def test_scan_marks_the_live_plasma_style_as_active(self):
+        style = kconfig.read_cascade("plasmarc").get(("plasmarc", "Theme"), {}).get("name")
+        if not style:
+            self.skipTest("no Plasma style configured")
+        for pkg in legacy.scan():
+            if pkg.name == style:
+                self.assertTrue(pkg.active)
+                self.assertFalse(pkg.removable)
 
 
 if __name__ == "__main__":

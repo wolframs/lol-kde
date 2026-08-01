@@ -14,6 +14,7 @@ import subprocess
 import sys
 
 from . import banner
+from . import legacy
 from . import install as installer
 from . import manifest, resolve
 from .resolve import DEGRADED, MISSING, OK
@@ -130,6 +131,70 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         else:
             print("\nNo global theme is set, so there is nothing to repair against.")
     return 1 if broken else 0
+
+
+def cmd_legacy(args: argparse.Namespace) -> int:
+    """List, and optionally remove, packages using pre-5.19 metadata."""
+    found = legacy.scan()
+    if not found:
+        print("No packages using legacy metadata.desktop. Unexpectedly tidy.")
+        return 0
+
+    print(f"{len(found)} package(s) still using legacy metadata.desktop:\n")
+    for pkg in found:
+        flags = []
+        if pkg.active:
+            flags.append(_paint("IN USE", "32"))
+        if not pkg.user_owned:
+            flags.append(_paint("system", "2"))
+        if pkg.referenced_by:
+            flags.append(_paint(f"needed by {', '.join(pkg.referenced_by)}", "36"))
+        suffix = ("  " + " ".join(flags)) if flags else ""
+        print(f"  {pkg.kind:<14} {pkg.name:<34}{suffix}")
+        if args.verbose:
+            print(f"                 {_paint(str(pkg.path), '2')}")
+
+    removable = [p for p in found if p.removable]
+    blocked = [p for p in found if not p.removable]
+
+    print(f"\n{len(removable)} removable, {len(blocked)} protected"
+          f" (in use, needed by another theme, or installed system-wide).")
+    print(_paint("These still work. They are only a problem during live theme "
+                 "reloads, where plasmashell has been seen to crash inside KSvg.", "2"))
+
+    if not args.remove:
+        if removable:
+            print(f"\nTo delete the {len(removable)} removable ones: "
+                  f"lol-kde legacy --remove")
+        return 0
+
+    if not removable:
+        print("\nNothing to remove: every legacy package is in use or system-owned.")
+        return 0
+
+    print("\nWould delete:")
+    for pkg in removable:
+        print(f"  {pkg.path}")
+
+    if not args.yes:
+        try:
+            answer = input("\nDelete these directories permanently? [y/N] ").strip().lower()
+        except EOFError:
+            answer = ""
+        if answer not in ("y", "yes"):
+            print("Nothing was removed.")
+            return 0
+
+    removed = 0
+    for pkg in removable:
+        try:
+            shutil.rmtree(pkg.path)
+            print(f"  removed  {pkg.kind}: {pkg.name}")
+            removed += 1
+        except OSError as exc:
+            print(f"  FAILED   {pkg.name}: {exc}", file=sys.stderr)
+    print(f"\n{removed} removed, {len(blocked)} left alone.")
+    return 0
 
 
 def cmd_why(args: argparse.Namespace) -> int:
@@ -253,6 +318,14 @@ def cmd_apply(args: argparse.Namespace) -> int:
     if not tool:
         print("error: plasma-apply-lookandfeel not found", file=sys.stderr)
         return 2
+    style = theme.settings.get(("plasmarc", "Theme"), {}).get("name", "")
+    if style and legacy.is_legacy("plasma/desktoptheme", style):
+        print(_paint(
+            f"note: Plasma style {style!r} uses legacy metadata.desktop. Live "
+            "reloads of these have been seen to crash plasmashell inside KSvg.\n"
+            "      The crash is self-healing (systemd restarts it) and your "
+            "settings survive. Logging out and back in avoids it entirely.\n", "33"))
+
     completed = subprocess.run([tool, "--apply", theme.name], text=True)
     if completed.returncode != 0:
         return completed.returncode
@@ -303,6 +376,12 @@ def build_parser() -> argparse.ArgumentParser:
     apply_cmd = sub.add_parser("apply", help="apply a global theme, then verify it")
     apply_cmd.add_argument("theme")
     apply_cmd.set_defaults(func=cmd_apply)
+
+    leg = sub.add_parser("legacy", help="find packages using pre-5.19 metadata.desktop")
+    leg.add_argument("--remove", action="store_true",
+                     help="delete removable ones (never the active or system-wide)")
+    leg.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    leg.set_defaults(func=cmd_legacy)
 
     why = sub.add_parser("why", help="explain how KDE theming is actually layered")
     why.set_defaults(func=cmd_why)

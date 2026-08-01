@@ -36,7 +36,7 @@ Discover does not read it. `lol-kde` does.
 Python 3.11+, standard library only. No dependencies, no venv, nothing to rot.
 
 ```sh
-git clone https://github.com/<you>/lol-kde ~/Projects/lol-kde
+git clone https://github.com/wolframs/lol-kde ~/Projects/lol-kde
 cd ~/Projects/lol-kde
 make install          # symlinks bin/lol-kde into ~/.local/bin
 ```

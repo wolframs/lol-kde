@@ -8,7 +8,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
-USER_AGENT = "lol-kde (+https://github.com/wolfram/lol-kde)"
+USER_AGENT = "lol-kde (+https://github.com/wolframs/lol-kde)"
 TIMEOUT = 30
 
 

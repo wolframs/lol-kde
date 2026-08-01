@@ -2,15 +2,15 @@
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│  ╻  ┏━┓╻     ╻┏ ╺┳┓┏━╸                                    │
-│  ┃  ┃ ┃┃  ╺━╸┣┻┓ ┃┃┣╸                                     │
-│  ┗━╸┗━┛┗━╸   ╹ ╹╺┻┛┗━╸                                    │
-│                                                           │
-│  NOTICE                                                   │
-│                                                           │
+│  ╻  ┏━┓╻     ╻┏ ╺┳┓┏━╸                                   │
+│  ┃  ┃ ┃┃  ╺━╸┣┻┓ ┃┃┣╸                                    │
+│  ┗━╸┗━┛┗━╸   ╹ ╹╺┻┛┗━╸                                   │
+│                                                          │
+│  NOTICE                                                  │
+│                                                          │
 │  A Global Theme is a list of up to seven things you may  │
 │  or may not own.  This program determines which.  We     │
-│  regret the necessity.                                               │
+│  regret the necessity.                                   │
 └──────────────────────────────────────────────────────────┘
 ```
 

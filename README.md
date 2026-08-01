@@ -150,6 +150,24 @@ Three things this has to get right, each learned the hard way:
 | Plasma style | plasmashell | Panel, popups, tray. Never applications. |
 | Icons / cursors / fonts / splash | independent | — |
 
+**Kvantum keeps its own theme selection, in its own config file.** Applying a
+global theme does not change it. You can therefore have every component report
+`ok` while your window interiors render a *different theme entirely* -- the
+global theme sets `widgetStyle=kvantum`, and Kvantum quietly carries on with
+whatever was in `~/.config/Kvantum/kvantum.kvconfig`. `lol-kde` now reports that
+as `warn` rather than `ok`.
+
+**A Kvantum theme's translucency is a config flag, not artwork.** Entries often
+ship two variants that differ by one line:
+
+```ini
+Layan/Layan.kvconfig              translucent_windows=true
+Layan-solid/Layan-solid.kvconfig  translucent_windows=false
+```
+
+Both are in the same store entry. Installing the first download silently gets you
+the opaque one. `doctor -v` now prints the flag.
+
 **Kvantum is an engine, not a theme.** Setting `widgetStyle=kvantum` succeeds even
 with no Kvantum theme installed; it then renders a flat grey default *and overrides
 your colour scheme*. `lol-kde` reports this as `warn` rather than `ok`, because it is

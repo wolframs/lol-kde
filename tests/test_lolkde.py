@@ -95,6 +95,31 @@ class TestResolution(unittest.TestCase):
         self.assertEqual(resolve.widget_style("fusion").status, resolve.OK)
 
 
+class TestKvantumMatching(unittest.TestCase):
+    """Kvantum keeps its own theme selection in its own config file.
+
+    It can be pointed at a completely different theme than the one you
+    applied, and every other component still reports ok while your window
+    interiors render someone else's design. That happened, and nothing caught it.
+    """
+
+    def test_foreign_kvantum_theme_is_degraded_not_ok(self):
+        result = resolve.widget_style("kvantum-dark", "Definitely-Not-The-Installed-Theme")
+        if result.status == resolve.MISSING:
+            self.skipTest("kvantum not installed on this machine")
+        self.assertEqual(result.status, resolve.DEGRADED)
+        self.assertIn("not part of", result.detail)
+
+    def test_no_expectation_means_no_mismatch_check(self):
+        result = resolve.widget_style("kvantum-dark")
+        if result.status == resolve.MISSING:
+            self.skipTest("kvantum not installed")
+        self.assertNotIn("not part of", result.detail)
+
+    def test_non_engine_styles_ignore_the_expectation(self):
+        self.assertEqual(resolve.widget_style("fusion", "Anything").status, resolve.OK)
+
+
 class TestAudit(unittest.TestCase):
     def test_declared_but_unset_is_reported(self):
         rows = resolve.audit(

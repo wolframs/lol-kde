@@ -52,8 +52,14 @@ def _search(subdir: str, name: str) -> Path | None:
     return paths.first_existing([d / subdir / name for d in paths.data_dirs()])
 
 
-def widget_style(name: str) -> Resolution:
-    """Qt widget style. Draws everything *inside* an application window."""
+def widget_style(name: str, expect: str = "") -> Resolution:
+    """Qt widget style. Draws everything *inside* an application window.
+
+    `expect` is the global theme's name. Kvantum keeps its own theme selection
+    in its own config file, so it can happily be pointed at a completely
+    different theme than the one you applied -- and every other component will
+    still report ok while your window interiors render someone else's design.
+    """
     r = Resolution("widget-style", "Widget style", name, MISSING)
     if not name:
         return Resolution("widget-style", "Widget style", name, OK, "unset (Qt default)")
@@ -108,6 +114,27 @@ def widget_style(name: str) -> Resolution:
                 f"Kvantum theme {theme!r} is selected but not installed", plugin,
             )
         r.detail = f"Kvantum theme: {theme}"
+        if expect:
+            norm = lambda v: v.lower().replace("-", "").replace("_", "").replace(" ", "")
+            base = norm(theme)
+            wanted = norm(expect)
+            if wanted not in base and base not in wanted:
+                return Resolution(
+                    "widget-style", "Widget style", name, DEGRADED,
+                    f"Kvantum is set to {theme!r}, which is not part of "
+                    f"{expect!r}; window interiors render that other theme",
+                    plugin,
+                )
+            # Variant flags live in the Kvantum config, not the SVG. A theme
+            # shipping both Foo and Foo-solid differs only by this line.
+            for base_dir in [paths.config_home() / "Kvantum"] + [
+                    d / "Kvantum" for d in paths.data_dirs()]:
+                cfg = base_dir / theme / f"{theme}.kvconfig"
+                if cfg.is_file():
+                    value = kconfig.get(cfg, "%General", "translucent_windows")
+                    if value is not None:
+                        r.detail += (f", translucent_windows={value}")
+                    break
     return r
 
 
@@ -372,6 +399,7 @@ def audit(
     """
     rows: list[AuditRow] = []
 
+    theme_name = live.get(("kdeglobals", "KDE"), {}).get("LookAndFeelPackage", "")
     for key, resolver in SIMPLE_POINTERS.items():
         config_file, group, option = key
         declared_value = declared.get((config_file, group), {}).get(option)
@@ -379,7 +407,10 @@ def audit(
         if not declared_value and not live_value:
             continue
 
-        resolution = resolver(live_value) if live_value else None
+        if live_value and resolver is widget_style:
+            resolution = widget_style(live_value, theme_name)
+        else:
+            resolution = resolver(live_value) if live_value else None
         kind = resolution.kind if resolution else ""
         note = ""
         if declared_value and not live_value:

@@ -1,0 +1,164 @@
+"""Installing store content into the directories KDE expects.
+
+Extraction deliberately ignores the declared Uncompress mode in one respect:
+whether an archive has a single top-level directory is *detected* rather than
+trusted, because uploads routinely disagree with their category's declaration.
+"""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+import tarfile
+import tempfile
+import zipfile
+from dataclasses import dataclass
+from pathlib import Path
+
+from . import knsrc, store
+from .manifest import Dependency
+
+
+@dataclass
+class InstallResult:
+    dependency: Dependency
+    item: store.StoreItem | None
+    status: str          # installed | skipped | failed
+    detail: str
+    destination: Path | None = None
+
+
+def _safe_extract(archive: Path, into: Path) -> Path:
+    """Unpack an archive, refusing entries that escape the destination."""
+    into.mkdir(parents=True, exist_ok=True)
+    if zipfile.is_zipfile(archive):
+        with zipfile.ZipFile(archive) as zf:
+            for member in zf.namelist():
+                resolved = (into / member).resolve()
+                if not resolved.is_relative_to(into.resolve()):
+                    raise ValueError(f"archive escapes destination: {member}")
+            zf.extractall(into)
+    elif tarfile.is_tarfile(archive):
+        with tarfile.open(archive) as tf:
+            # filter="data" strips absolute paths, symlink escapes and specials.
+            tf.extractall(into, filter="data")
+    else:
+        raise ValueError(f"unrecognised archive format: {archive.name}")
+    return into
+
+
+def _single_root(directory: Path) -> Path | None:
+    """Return the sole top-level directory of an extracted archive, if any."""
+    entries = [e for e in directory.iterdir() if not e.name.startswith(".")]
+    if len(entries) == 1 and entries[0].is_dir():
+        return entries[0]
+    return None
+
+
+def _install_tree(source: Path, target: Path, name: str, force: bool) -> Path:
+    """Move an extracted payload into its final home."""
+    target.mkdir(parents=True, exist_ok=True)
+    root = _single_root(source)
+    if root is not None:
+        destination = target / root.name
+        payload = root
+    else:
+        destination = target / name
+        payload = source
+
+    if destination.exists():
+        if not force:
+            raise FileExistsError(destination)
+        shutil.rmtree(destination)
+    shutil.move(str(payload), str(destination))
+    return destination
+
+
+def _kpackage_install(archive: Path, package_type: str, force: bool) -> str:
+    tool = shutil.which("kpackagetool6") or shutil.which("kpackagetool5")
+    if not tool:
+        raise RuntimeError("kpackagetool6 not found; cannot install KPackage content")
+    action = "--upgrade" if force else "--install"
+    command = [tool]
+    if package_type:
+        command += ["--type", package_type]
+    command += [action, str(archive)]
+    completed = subprocess.run(command, capture_output=True, text=True)
+    if completed.returncode != 0:
+        message = (completed.stderr or completed.stdout).strip()
+        # --install fails on an already-present package; treat that as success.
+        if "already exists" in message.lower():
+            return "already installed"
+        raise RuntimeError(message or f"{tool} exited {completed.returncode}")
+    return (completed.stdout or "installed").strip().splitlines()[-1]
+
+
+def install_dependency(
+    dependency: Dependency,
+    *,
+    force: bool = False,
+    dry_run: bool = False,
+) -> InstallResult:
+    spec = knsrc.load(dependency.knsrc)
+
+    if spec.needs_root:
+        return InstallResult(
+            dependency, None, "skipped",
+            f"{dependency.knsrc} installs system-wide and needs root; "
+            f"install manually from {dependency.store_url}",
+        )
+    if not spec.found and not spec.uses_kpackage:
+        return InstallResult(
+            dependency, None, "skipped",
+            f"no install target known for category {dependency.knsrc!r}",
+        )
+
+    try:
+        item = store.fetch_metadata(dependency.host, dependency.content_id)
+    except store.StoreError as exc:
+        return InstallResult(dependency, None, "failed", str(exc))
+
+    if dry_run:
+        where = spec.target or "via kpackagetool6"
+        return InstallResult(dependency, item, "skipped", f"would install to {where}")
+
+    try:
+        target = store.fetch_download(dependency.host, dependency.content_id)
+    except store.StoreError as exc:
+        return InstallResult(dependency, item, "failed", str(exc))
+
+    with tempfile.TemporaryDirectory(prefix="lol-kde-") as tmp:
+        tmpdir = Path(tmp)
+        try:
+            archive = store.download(target, tmpdir / target.filename)
+        except store.StoreError as exc:
+            return InstallResult(dependency, item, "failed", str(exc))
+
+        try:
+            if spec.uses_kpackage:
+                detail = _kpackage_install(archive, spec.kpackage_type, force)
+                return InstallResult(dependency, item, "installed", detail)
+
+            if spec.uncompress == "never":
+                assert spec.target is not None
+                spec.target.mkdir(parents=True, exist_ok=True)
+                destination = spec.target / archive.name
+                if destination.exists() and not force:
+                    return InstallResult(
+                        dependency, item, "skipped", f"already present at {destination}"
+                    )
+                shutil.copy2(archive, destination)
+                return InstallResult(dependency, item, "installed", "", destination)
+
+            extracted = _safe_extract(archive, tmpdir / "unpacked")
+            assert spec.target is not None
+            destination = _install_tree(extracted, spec.target, item.name, force)
+            return InstallResult(dependency, item, "installed", "", destination)
+
+        except FileExistsError as exc:
+            return InstallResult(
+                dependency, item, "skipped",
+                f"already installed at {exc.args[0]} (use --force to replace)",
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            return InstallResult(dependency, item, "failed", str(exc))

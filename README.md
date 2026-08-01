@@ -60,6 +60,7 @@ Or just run `./bin/lol-kde` from the checkout — it needs no install step.
 ## Use
 
 ```sh
+lol-kde please <store-url>          # install a theme AND everything it needs
 lol-kde doctor                      # what is applied right now, and what is broken
 lol-kde list                        # installed global themes
 lol-kde check <theme>               # resolve one theme's pointers
@@ -95,6 +96,46 @@ Applied global theme: Sweet-Ambar-Blue
 | `unset` | the theme declares this component, but nothing set it; a KDE default is in effect |
 | `warn` | present but will not render as intended (see Kvantum, below) |
 | `MISS` | the configured value names something not installed; KDE is silently falling back |
+
+## `lol-kde please <url>`
+
+Theme authors *do* declare their dependencies. They write them in the description,
+in prose, with links, because the packaging format gave them nowhere else:
+
+> For better experience you need this kvantum theme: Layan https://www.pling.com/p/1325246/
+> gtk theme: Layan https://www.pling.com/p/1309214/
+> Icon theme: Tela icon theme https://www.pling.com/p/1279924/
+
+That is machine-readable enough.
+
+```sh
+$ lol-kde please https://www.opendesktop.org/p/1325243
+
+Layan look and feel theme  Global Themes (Plasma 6)
+The description names 4 further components:
+  +  Layan kvantum theme    Kvantum                 ~/.config/Kvantum
+  +  Layan gtk theme        GTK3/4 Themes           ~/.themes
+  +  Tela-icon-theme        Full Icon Themes        ~/.local/share/icons
+  +  Layan wallpaper        Wallpapers KDE Plasma   ~/.local/share/wallpapers
+```
+
+It then reconciles that list against the installed package's
+`X-KPackage-Dependencies`, because the two disagree: Layan's description names 4
+components, its manifest names 7, and only the manifest mentions the cursor theme.
+Result is 6/6 resolved from one URL.
+
+Three things this has to get right, each learned the hard way:
+
+- **The graph is cyclic.** A theme's kvantum dependency links back to the theme.
+  Ids are recorded on enqueue, not on visit.
+- **One archive is not one package.** Tela ships `Tela`, `Tela-dark` and
+  `Tela-light` side by side; wrapping them in one folder puts every icon theme at
+  the wrong path. An archive with top-level *files* is a single package and is
+  never split.
+- **One store entry is not one file.** Layan cursors ships
+  `01-Layan-border-cursors`, `02-Layan-cursors` and `03-Layan-white-cursors`.
+  The theme wants the third. Fetching download #1 silently installs the wrong
+  variant and leaves the component "missing" with no explanation.
 
 ## Things that are not obvious
 

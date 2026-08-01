@@ -7,6 +7,7 @@ trusted, because uploads routinely disagree with their category's declaration.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import tarfile
@@ -55,23 +56,47 @@ def _single_root(directory: Path) -> Path | None:
     return None
 
 
-def _install_tree(source: Path, target: Path, name: str, force: bool) -> Path:
-    """Move an extracted payload into its final home."""
-    target.mkdir(parents=True, exist_ok=True)
-    root = _single_root(source)
-    if root is not None:
-        destination = target / root.name
-        payload = root
-    else:
-        destination = target / name
-        payload = source
+def _payloads(source: Path) -> list[Path] | None:
+    """Split an extracted archive into the package(s) it actually contains.
 
-    if destination.exists():
-        if not force:
-            raise FileExistsError(destination)
-        shutil.rmtree(destination)
-    shutil.move(str(payload), str(destination))
-    return destination
+    One archive is not always one package: icon themes routinely ship several
+    variants side by side (Tela, Tela-dark, Tela-light), and wrapping those in
+    a folder named after the store entry puts every one of them at the wrong
+    path. But an archive whose top level has real files is a single package
+    with subdirectories, and must not be split.
+
+    Returns the directories to install, or None to install `source` whole.
+    """
+    entries = [e for e in source.iterdir() if not e.name.startswith(".")]
+    directories = [e for e in entries if e.is_dir()]
+    files = [e for e in entries if e.is_file()]
+
+    if len(directories) == 1 and not files:
+        return [directories[0]]
+    if len(directories) > 1 and not files:
+        return directories
+    return None
+
+
+def _install_tree(source: Path, target: Path, name: str, force: bool) -> list[Path]:
+    """Move an extracted payload into its final home. Returns destinations."""
+    target.mkdir(parents=True, exist_ok=True)
+    payloads = _payloads(source)
+    if payloads is None:
+        payloads, names = [source], [name]
+    else:
+        names = [p.name for p in payloads]
+
+    destinations: list[Path] = []
+    for payload, payload_name in zip(payloads, names):
+        destination = target / payload_name
+        if destination.exists():
+            if not force:
+                raise FileExistsError(destination)
+            shutil.rmtree(destination)
+        shutil.move(str(payload), str(destination))
+        destinations.append(destination)
+    return destinations
 
 
 def _kpackage_install(archive: Path, package_type: str, force: bool) -> str:
@@ -93,11 +118,78 @@ def _kpackage_install(archive: Path, package_type: str, force: bool) -> str:
     return (completed.stdout or "installed").strip().splitlines()[-1]
 
 
+def place_archive(archive: Path, route, name: str, force: bool) -> tuple[str, str, Path | None]:
+    """Unpack a downloaded archive into wherever the route says it belongs.
+
+    Shared by the manifest-driven installer and the store-page resolver, so
+    both put things in exactly the same places.
+    """
+    if route.uses_kpackage:
+        message = _kpackage_install(archive, route.kpackage_type, force)
+        # kpackagetool6 reports "Successfully installed <path>"; that path is
+        # the only reliable source of the installed package's directory name,
+        # which is rarely the store's display name and is not discoverable by
+        # diffing when the package was already present.
+        found = re.search(r"(/\S+/)\s*$", message.strip())
+        destination = Path(found.group(1)) if found else None
+        return "installed", message, destination
+
+    if route.target is None:
+        return "failed", "no install target for this content type", None
+
+    if route.uncompress == "never":
+        route.target.mkdir(parents=True, exist_ok=True)
+        destination = route.target / archive.name
+        if destination.exists() and not force:
+            return "skipped", f"already present at {destination}", destination
+        shutil.copy2(archive, destination)
+        return "installed", "", destination
+
+    extracted = _safe_extract(archive, archive.parent / "unpacked")
+    try:
+        destinations = _install_tree(extracted, route.target, name, force)
+    except FileExistsError as exc:
+        return "skipped", f"already installed at {exc.args[0]} (use --force)", None
+    detail = ("" if len(destinations) == 1
+              else f"{len(destinations)} packages: "
+                   + ", ".join(d.name for d in destinations))
+    return "installed", detail, destinations[0]
+
+
+def install_from_store(node, *, force: bool = False, dry_run: bool = False):
+    """Download and install one node of a store dependency graph."""
+    item, route = node.item, node.route
+    if item is None:
+        return "failed", "could not be looked up on any store host", None
+    if route is None or not route.known or (route.target is None and not route.uses_kpackage):
+        return "skipped", f"unrecognised content type {item.typename!r}", None
+    if route.needs_root:
+        return "skipped", "installs system-wide and needs root", None
+    if dry_run:
+        where = route.target or "via kpackagetool6"
+        return "skipped", f"would install to {where}", None
+
+    try:
+        target = store.fetch_download(node.host, node.content_id)
+    except store.StoreError as exc:
+        return "failed", str(exc), None
+
+    with tempfile.TemporaryDirectory(prefix="lol-kde-") as tmp:
+        try:
+            archive = store.download(target, Path(tmp) / target.filename)
+            return place_archive(archive, route, item.name, force)
+        except store.StoreError as exc:
+            return "failed", str(exc), None
+        except (OSError, ValueError, RuntimeError) as exc:
+            return "failed", str(exc), None
+
+
 def install_dependency(
     dependency: Dependency,
     *,
     force: bool = False,
     dry_run: bool = False,
+    prefer: str = "",
 ) -> InstallResult:
     spec = knsrc.load(dependency.knsrc)
 
@@ -123,7 +215,8 @@ def install_dependency(
         return InstallResult(dependency, item, "skipped", f"would install to {where}")
 
     try:
-        target = store.fetch_download(dependency.host, dependency.content_id)
+        index = store.choose_download(dependency.host, dependency.content_id, prefer)
+        target = store.fetch_download(dependency.host, dependency.content_id, index)
     except store.StoreError as exc:
         return InstallResult(dependency, item, "failed", str(exc))
 
@@ -152,8 +245,11 @@ def install_dependency(
 
             extracted = _safe_extract(archive, tmpdir / "unpacked")
             assert spec.target is not None
-            destination = _install_tree(extracted, spec.target, item.name, force)
-            return InstallResult(dependency, item, "installed", "", destination)
+            destinations = _install_tree(extracted, spec.target, item.name, force)
+            detail = ("" if len(destinations) == 1
+                      else f"{len(destinations)} packages: "
+                           + ", ".join(d.name for d in destinations))
+            return InstallResult(dependency, item, "installed", detail, destinations[0])
 
         except FileExistsError as exc:
             return InstallResult(

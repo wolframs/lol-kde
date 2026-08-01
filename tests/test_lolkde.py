@@ -12,7 +12,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lolkde import banner, kconfig, knsrc, legacy, manifest, paths, resolve  # noqa: E402
+from lolkde import (banner, catalog, install, kconfig, knsrc, legacy,  # noqa: E402
+                    manifest, paths, resolve, store)
 
 
 class TestManifestParsing(unittest.TestCase):
@@ -289,6 +290,91 @@ class TestLegacy(unittest.TestCase):
             if pkg.name == style:
                 self.assertTrue(pkg.active)
                 self.assertFalse(pkg.removable)
+
+
+class TestStorePages(unittest.TestCase):
+    def test_parses_every_federated_front_end(self):
+        for url in ("https://www.opendesktop.org/p/1325243",
+                    "https://www.pling.com/p/1325243/",
+                    "https://store.kde.org/p/1325243",
+                    "http://kde-look.org/p/1325243", "1325243"):
+            self.assertEqual(catalog.parse_url(url), "1325243", url)
+
+    def test_rejects_non_store_urls(self):
+        self.assertIsNone(catalog.parse_url("https://example.com/p/notanid"))
+        self.assertIsNone(catalog.parse_url("nonsense"))
+
+    def test_extracts_dependency_links_in_order_without_duplicates(self):
+        description = ("kvantum: https://www.pling.com/p/1325246/ "
+                       "gtk: https://www.pling.com/p/1309214/ "
+                       "again: https://www.pling.com/p/1325246/")
+        self.assertEqual(catalog.dependency_ids(description), ["1325246", "1309214"])
+
+    def test_handles_html_escaped_descriptions(self):
+        self.assertEqual(
+            catalog.dependency_ids("see &lt;a&gt;https://www.pling.com/p/999/&lt;/a&gt;"),
+            ["999"])
+
+    def test_routes_by_xdg_type_then_type_id_then_keyword(self):
+        def item(**kw):
+            base = dict(content_id="1", name="n", typename="", xdg_type="",
+                        author="", downloads="", type_id="")
+            return store.StoreItem(**{**base, **kw})
+        self.assertEqual(catalog.route_for(item(xdg_type="icons")).category, "icons")
+        # Plasma 6 categories ship no xdg_type; fall back to the numeric id.
+        self.assertEqual(catalog.route_for(item(type_id="722")).category, "lookandfeel")
+        self.assertEqual(catalog.route_for(item(typename="Kvantum")).category, "kvantum")
+        self.assertFalse(catalog.route_for(item(typename="Mystery Meat")).known)
+
+
+class TestMultiPackageArchives(unittest.TestCase):
+    """One archive is not always one package."""
+
+    def _tree(self, tmp, dirs, files=()):
+        root = Path(tmp) / "unpacked"
+        root.mkdir()
+        for d in dirs:
+            (root / d).mkdir()
+        for f in files:
+            (root / f).write_text("x")
+        return root
+
+    def test_single_directory_is_unwrapped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._tree(tmp, ["Layan"])
+            self.assertEqual([p.name for p in install._payloads(root)], ["Layan"])
+
+    def test_sibling_directories_each_install_separately(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._tree(tmp, ["Tela", "Tela-dark", "Tela-light"])
+            self.assertEqual(sorted(p.name for p in install._payloads(root)),
+                             ["Tela", "Tela-dark", "Tela-light"])
+
+    def test_top_level_files_mean_one_package_with_subdirs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._tree(tmp, ["contents"], ["metadata.json"])
+            self.assertIsNone(install._payloads(root))
+
+
+class TestDownloadVariants(unittest.TestCase):
+    FILES = [(1, "01-Layan-border-cursors.tar.xz"),
+             (2, "02-Layan-cursors.tar.xz"),
+             (3, "03-Layan-white-cursors.tar.xz")]
+
+    def test_picks_the_named_variant(self):
+        self.assertEqual(store.best_match(self.FILES, "Layan-white-cursors"), 3)
+
+    def test_punctuation_insensitive(self):
+        self.assertEqual(store.best_match(self.FILES, "layan_white_cursors"), 3)
+
+    def test_falls_back_to_first_when_nothing_matches(self):
+        self.assertEqual(store.best_match(self.FILES, "Nonexistent"), 1)
+
+    def test_no_preference_takes_the_first(self):
+        self.assertEqual(store.best_match(self.FILES), 1)
+
+    def test_empty_list_is_safe(self):
+        self.assertEqual(store.best_match([], "anything"), 1)
 
 
 if __name__ == "__main__":

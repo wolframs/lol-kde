@@ -24,6 +24,8 @@ class StoreItem:
     xdg_type: str
     author: str
     downloads: str
+    type_id: str = ""
+    description: str = ""     # authors hide their dependency list in here
 
 
 @dataclass
@@ -70,7 +72,49 @@ def fetch_metadata(host: str, content_id: str) -> StoreItem:
         xdg_type=_text(content, "xdg_type"),
         author=_text(content, "personid"),
         downloads=_text(content, "downloads"),
+        type_id=_text(content, "typeid"),
+        description=_text(content, "description"),
     )
+
+
+def list_downloads(host: str, content_id: str) -> list[tuple[int, str]]:
+    """Every file attached to an entry, as (index, filename).
+
+    One store entry is often several files: Layan cursors ships
+    01-Layan-border-cursors, 02-Layan-cursors and 03-Layan-white-cursors.
+    Fetching only the first silently installs the wrong variant.
+    """
+    raw = _get(f"https://{host}/ocs/v1/content/data/{content_id}")
+    data = _ocs(ET.fromstring(raw))
+    content = data.find("content")
+    if content is None:
+        return []
+    files: list[tuple[int, str]] = []
+    for element in content:
+        if element.tag.startswith("downloadname") and (element.text or "").strip():
+            suffix = element.tag[len("downloadname"):]
+            if suffix.isdigit():
+                files.append((int(suffix), element.text.strip()))
+    return sorted(files)
+
+
+def best_match(files: list[tuple[int, str]], prefer: str = "") -> int:
+    """Which attached file best matches a wanted component name."""
+    if not files:
+        return 1
+    if not prefer:
+        return files[0][0]
+    wanted = prefer.lower().replace("-", "").replace("_", "")
+    for index, name in files:
+        stem = Path(name).name.lower().replace("-", "").replace("_", "")
+        if wanted in stem:
+            return index
+    return files[0][0]
+
+
+def choose_download(host: str, content_id: str, prefer: str = "") -> int:
+    """Pick the attached file that best matches a wanted component name."""
+    return best_match(list_downloads(host, content_id), prefer)
 
 
 def fetch_download(host: str, content_id: str, index: int = 1) -> DownloadTarget:

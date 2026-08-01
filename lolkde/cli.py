@@ -12,8 +12,9 @@ import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
-from . import banner
+from . import banner, catalog
 from . import legacy
 from . import install as installer
 from . import manifest, resolve
@@ -195,6 +196,114 @@ def cmd_legacy(args: argparse.Namespace) -> int:
             print(f"  FAILED   {pkg.name}: {exc}", file=sys.stderr)
     print(f"\n{removed} removed, {len(blocked)} left alone.")
     return 0
+
+
+def cmd_please(args: argparse.Namespace) -> int:
+    """Install a store page and everything its description says it needs."""
+    content_id = catalog.parse_url(args.url)
+    if content_id is None:
+        print(f"error: {args.url!r} is not a store page URL or content id",
+              file=sys.stderr)
+        return 2
+
+    print(f"Resolving {content_id} ...")
+    try:
+        nodes = catalog.walk(content_id, max_depth=args.depth)
+    except Exception as exc:                       # network, XML, anything
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if not nodes or nodes[0].item is None:
+        print(f"error: content {content_id} could not be looked up", file=sys.stderr)
+        return 1
+
+    root = nodes[0]
+    extra = len(nodes) - 1
+    print(f"\n{root.item.name}  {_paint(root.item.typename, '2')}")
+    if extra:
+        print(_paint(f"The description names {extra} further "
+                     f"component{'s' if extra != 1 else ''}:", "2"))
+
+    for node in nodes[1:]:
+        if node.item is None:
+            print(f"  {_paint('?', '31')}  {node.content_id}  "
+                  f"{_paint('could not be looked up', '2')}")
+            continue
+        route = node.route
+        where = (str(route.target) if route and route.target
+                 else "kpackagetool6" if route and route.uses_kpackage else "?")
+        mark = _paint("+", "32") if route and route.known else _paint("?", "33")
+        print(f"  {mark}  {node.item.name:<30} {node.item.typename:<26} "
+              f"{_paint(where, '2')}")
+
+    if args.dry_run:
+        print(_paint("\nDry run: nothing downloaded.", "2"))
+        return 0
+
+    if not args.yes:
+        try:
+            answer = input(f"\nDownload and install {len(nodes)} item(s)? [Y/n] ")
+        except EOFError:
+            answer = ""
+        if answer.strip().lower() in ("n", "no"):
+            print("Nothing was installed.")
+            return 0
+
+    print()
+    failures = 0
+    root_destination: Path | None = None
+    for node in nodes:
+        status, detail, destination = installer.install_from_store(node, force=args.force)
+        if node is root and destination is not None:
+            root_destination = destination
+        name = node.item.name if node.item else node.content_id
+        mark = {"installed": _paint("ok  ", "32"),
+                "skipped": _paint("skip", "33"),
+                "failed": _paint("FAIL", "31")}[status]
+        print(f"  {mark}  {name}")
+        if detail:
+            print(f"        {_paint(detail, '2')}")
+        if status == "failed":
+            failures += 1
+
+    if root.route and root.route.category == "lookandfeel":
+        # The installed package name is rarely the store's display name
+        # ("Layan look and feel theme" -> com.github.vinceliuice.Layan), so
+        # report what actually appeared on disk.
+        target = root_destination.name if root_destination else root.item.name
+
+        # The description and X-KPackage-Dependencies are different lists by
+        # different authors. Layan's description names 4 things; its manifest
+        # names 7, including the cursor theme the description forgets.
+        if root_destination:
+            try:
+                theme = manifest.load(target)
+            except (FileNotFoundError, OSError):
+                theme = None
+            if theme and theme.dependencies:
+                missing = [r for r in resolve.resolve_settings(theme.settings)
+                           if r.status != OK]
+                if missing:
+                    print(_paint(f"\nIts manifest declares "
+                                 f"{len(theme.dependencies)} dependencies and "
+                                 f"{len(missing)} component(s) are still "
+                                 f"unresolved. Fetching those too:", "2"))
+                    # Ask for the specific variant the theme names, e.g.
+                    # 'Layan-white-cursors' out of an entry shipping three.
+                    wanted = {r.kind: r.value for r in missing}
+                    kinds = {"xcursor": "cursors", "icons": "icons",
+                             "colorschemes": "color-scheme",
+                             "plasma-themes": "plasma-style",
+                             "aurorae": "decoration"}
+                    for dep in theme.dependencies:
+                        prefer = wanted.get(kinds.get(dep.knsrc, ""), "")
+                        result = installer.install_dependency(
+                            dep, force=args.force, prefer=prefer)
+                        if result.status == "installed":
+                            name = result.item.name if result.item else dep.content_id
+                            print(f"  {_paint('ok  ', '32')}  {name}")
+
+        print(f"\nTo use it:  {_paint(f'lol-kde apply {target}', '36')}")
+    return 1 if failures else 0
 
 
 def cmd_why(args: argparse.Namespace) -> int:
@@ -382,6 +491,15 @@ def build_parser() -> argparse.ArgumentParser:
                      help="delete removable ones (never the active or system-wide)")
     leg.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     leg.set_defaults(func=cmd_legacy)
+
+    pls = sub.add_parser("please", help="install a store page and everything its description names")
+    pls.add_argument("url", help="opendesktop/pling/store.kde.org page URL, or a bare content id")
+    pls.add_argument("--depth", type=int, default=1,
+                     help="how far to follow dependency links (default 1)")
+    pls.add_argument("--dry-run", action="store_true", help="resolve but download nothing")
+    pls.add_argument("--force", action="store_true", help="replace already-installed content")
+    pls.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    pls.set_defaults(func=cmd_please)
 
     why = sub.add_parser("why", help="explain how KDE theming is actually layered")
     why.set_defaults(func=cmd_why)

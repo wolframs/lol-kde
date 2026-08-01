@@ -1,17 +1,17 @@
 # lol-kde
 
 ```
-┌───────────────────────────────────────────────────────────┐
+┌──────────────────────────────────────────────────────────┐
 │  ╻  ┏━┓╻     ╻┏ ╺┳┓┏━╸                                    │
 │  ┃  ┃ ┃┃  ╺━╸┣┻┓ ┃┃┣╸                                     │
 │  ┗━╸┗━┛┗━╸   ╹ ╹╺┻┛┗━╸                                    │
 │                                                           │
 │  NOTICE                                                   │
 │                                                           │
-│  A Global Theme is a list of six things you may or may    │
-│  not own.  This program determines which.  We regret the  │
-│  necessity.                                               │
-└───────────────────────────────────────────────────────────┘
+│  A Global Theme is a list of up to seven things you may  │
+│  or may not own.  This program determines which.  We     │
+│  regret the necessity.                                               │
+└──────────────────────────────────────────────────────────┘
 ```
 
 **KDE global themes declare their dependencies. Nothing installs them. This does.**
@@ -61,6 +61,7 @@ Or just run `./bin/lol-kde` from the checkout — it needs no install step.
 
 ```sh
 lol-kde please <store-url>          # install a theme AND everything it needs
+lol-kde no-thank-you <store-url>    # resolve and report, install nothing
 lol-kde doctor                      # what is applied right now, and what is broken
 lol-kde list                        # installed global themes
 lol-kde check <theme>               # resolve one theme's pointers

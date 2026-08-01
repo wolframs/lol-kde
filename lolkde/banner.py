@@ -20,15 +20,28 @@ WORDMARK = [
 
 PLAIN = "lol-kde"
 
-NOTICE = [
-    "NOTICE",
-    "",
-    "A Global Theme is a list of six things you may or may",
-    "not own.  This program determines which.  We regret the",
-    "necessity.",
-]
+NUMERALS = {5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten"}
 
-SUBTITLE = "A Global Theme is a list of six things you may or may not own."
+
+def _count() -> str:
+    from . import resolve
+    n = resolve.pointer_kinds()
+    return NUMERALS.get(n, str(n))
+
+
+def notice() -> list[str]:
+    return [
+        "NOTICE",
+        "",
+        f"A Global Theme is a list of up to {_count()} things you may",
+        "or may not own.  This program determines which.  We",
+        "regret the necessity.",
+    ]
+
+
+def subtitle() -> str:
+    return (f"A Global Theme is a list of up to {_count()} things "
+            "you may or may not own.")
 
 # Shown under `why`. The whole architecture, at the altitude people actually
 # need it, which is not the altitude the documentation offers it at.
@@ -66,15 +79,15 @@ def _box(blocks: list[list[str]]) -> str:
 
 def width() -> int:
     """Columns the full banner needs."""
-    return len(_box([WORDMARK, NOTICE]).splitlines()[0])
+    return len(_box([WORDMARK, notice()]).splitlines()[0])
 
 
 def render(width_available: int = 80, color: bool = True) -> str:
     """The notice, or a modest substitute when the terminal is too narrow."""
     if width_available < width():
-        head = f"{PLAIN} -- {SUBTITLE}"
+        head = f"{PLAIN} -- {subtitle()}"
         return f"\033[36m{head}\033[0m" if color else head
-    body = _box([WORDMARK, NOTICE])
+    body = _box([WORDMARK, notice()])
     if not color:
         return body
     return "\n".join(f"\033[36m{line}\033[0m" for line in body.splitlines())

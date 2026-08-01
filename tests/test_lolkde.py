@@ -197,6 +197,23 @@ class TestBanner(unittest.TestCase):
     def test_no_colour_means_no_escapes(self):
         self.assertNotIn("\033", banner.render(width_available=200, color=False))
 
+    def test_notice_count_matches_what_the_tool_actually_checks(self):
+        # The banner once said "six things" while apply verified seven.
+        # The number is now computed, and this asserts it stays honest.
+        spelled = banner.NUMERALS[resolve.pointer_kinds()]
+        self.assertIn(spelled, " ".join(banner.notice()))
+        self.assertIn(spelled, banner.subtitle())
+
+    def test_pointer_count_equals_the_audit_row_count(self):
+        declared = {("kdeglobals", "KDE"): {"widgetStyle": "fusion"},
+                    ("kdeglobals", "General"): {"ColorScheme": "X"},
+                    ("kdeglobals", "Icons"): {"Theme": "X"},
+                    ("kcminputrc", "Mouse"): {"cursorTheme": "X"},
+                    ("plasmarc", "Theme"): {"name": "X"},
+                    ("ksplashrc", "KSplash"): {"Theme": "X"},
+                    ("kwinrc", "org.kde.kdecoration2"): {"theme": "X"}}
+        self.assertEqual(len(resolve.audit(declared, {})), resolve.pointer_kinds())
+
     def test_every_remark_branch_is_reachable_and_singular_safe(self):
         cases = [(6, 0, 0, 0), (3, 0, 3, 0), (5, 1, 0, 0),
                  (2, 0, 0, 2), (0, 0, 0, 0), (5, 0, 1, 0), (5, 0, 0, 1)]

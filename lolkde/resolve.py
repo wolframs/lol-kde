@@ -305,6 +305,16 @@ UNSET = "UNSET"
 DRIFT = "DRIFT"
 
 
+def pointer_kinds() -> int:
+    """How many component pointers a global theme can declare.
+
+    Computed, never written down. A hardcoded count in the banner drifted from
+    the code the moment a splash-screen pointer was added, and the tool ended
+    up describing six things while verifying seven.
+    """
+    return len(SIMPLE_POINTERS) + 1        # + the window decoration
+
+
 def _same_pointer(kind: str, a: str, b: str) -> bool:
     """Do two pointer values name the same component?
 

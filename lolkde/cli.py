@@ -492,6 +492,13 @@ def build_parser() -> argparse.ArgumentParser:
     leg.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     leg.set_defaults(func=cmd_legacy)
 
+    nope = sub.add_parser("no-thank-you",
+                          help="resolve a store page and report, installing nothing")
+    nope.add_argument("url", help="store page URL, or a bare content id")
+    nope.add_argument("--depth", type=int, default=1,
+                      help="how far to follow dependency links (default 1)")
+    nope.set_defaults(func=cmd_please, dry_run=True, force=False, yes=True)
+
     pls = sub.add_parser("please", help="install a store page and everything its description names")
     pls.add_argument("url", help="opendesktop/pling/store.kde.org page URL, or a bare content id")
     pls.add_argument("--depth", type=int, default=1,

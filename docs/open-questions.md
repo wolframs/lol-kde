@@ -5,13 +5,14 @@ live system, each with the cheapest command that settles it. Written down
 because the expensive mistakes in this project all began as a plausible claim
 nobody checked — see `CLAUDE.md`, "Method rules".
 
-When you settle one: move the answer into `CLAUDE.md`, delete the row here.
+When you settle one: move the answer into `docs/kde-notes.md`, delete the
+row here.
 
 ---
 
 ## Blocking `restore`
 
-**All three are settled** (turn 8). The answers are in `CLAUDE.md`; the
+**All three are settled** (turn 8). The answers are in `docs/kde-notes.md`; the
 consequences are in `docs/restore-design.md` §1a and §2.
 
 The short version, because C changed the design:
@@ -64,12 +65,11 @@ value and needed no announcement. `diff` independently reported
 | a `[$d]` tombstone in `kdedefaults` behaves the same as one in `~/.config` | only the user layer was tested | plant one in the `kdedefaults` copy of a throwaway file and read the cascade |
 | store content `1918450` (Stone's wallpaper) returns `status 999: unknown request` | observed turn 9 on every attempt; other ids on the same host work | try again later — if it persists the entry is gone and Stone's manifest is stale |
 
-Not open questions, but carried here so they are not lost — both are outside
-this repo and were surfaced by the incident postmortem:
-
-- the host has 64 GiB RAM and **512 MiB swap**, with no early-OOM policy
-- `an unrelated systemd unit` restarts every ten seconds (`node` missing
-  from the unit's `PATH`) and floods the journal
+The incident postmortem also surfaced two pieces of **host** configuration to
+fix — a swap size far too small for the RAM with no early-OOM policy, and an
+unrelated systemd unit in a restart loop flooding the journal. Neither is a
+question about this project, so the specifics live with the machine rather
+than in the repo.
 
 ## Settled on turn 14 — `please --dry-run` is a forecast now
 

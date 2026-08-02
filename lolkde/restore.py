@@ -53,6 +53,7 @@ PIN_LOST = "pin-lost"    # correct value, wrong layer
 STALE = "stale"          # correct on disk, running session not told
 DIVERGED = "diverged"
 FAILED = "failed"
+SKIPPED = "skipped"      # the run aborted before reaching this step
 
 
 def store() -> Path:
@@ -137,8 +138,11 @@ def _read(locate, file: str, group: str, key: str) -> Layered:
         if path is None or not path.is_file():
             continue
         parser = kconfig.read_ini(path)
-        state = kconfig.entry_state(parser, group, key)
-        value = ((parser.get(group, key) or "").strip()
+        state, option = kconfig._entry(parser, group, key)
+        # Read through the option name it was found under, not the bare key:
+        # a `[$i]`-flagged entry is stored decorated and `parser.get(group,
+        # key)` raises NoOptionError on it.
+        value = ((parser.get(group, option) or "").strip()
                  if state == "set" else None)
         kind = (USER if directory == home
                 else DEFAULTS if directory == home / "kdedefaults" else SYSTEM)
@@ -518,7 +522,8 @@ def run(plan: Plan, pre_snapshot: str = "", notify: bool = True) -> Outcome:
                   "components": plan.selected,
                   "steps": len(plan.writes)})
 
-    for step in plan.steps:
+    stopped_at: int | None = None
+    for index, step in enumerate(plan.steps):
         if not step.writes:
             step.outcome = OK if step.action == SAME else EXTRA
             continue
@@ -534,6 +539,7 @@ def run(plan: Plan, pre_snapshot: str = "", notify: bool = True) -> Outcome:
             step.outcome, step.detail = FAILED, str(exc)
             _append(log, {"event": "failed", **_record(step)})
             outcome.aborted = True
+            stopped_at = index
             break
 
         step.detail = result.detail
@@ -544,9 +550,22 @@ def run(plan: Plan, pre_snapshot: str = "", notify: bool = True) -> Outcome:
         # known to hold, and there is no --continue-on-error by design.
         if step.outcome == FAILED:
             outcome.aborted = True
+            stopped_at = index
             break
 
-    if notify and any(s.file == "kwinrc" and s.writes for s in plan.steps):
+    if stopped_at is not None:
+        # Everything after the break was never attempted. Saying so is not
+        # cosmetic: _verify used to compare those steps' live values against
+        # the snapshot and stamp them DIVERGED -- the word this tool uses for
+        # "a write landed and went wrong" -- for keys nothing had touched. The
+        # printed summary then contradicted the journal, which is what ROADMAP
+        # nominates as the record of where a run stopped.
+        _mark_unreached(plan, from_index=stopped_at + 1)
+
+    # Only if a kwinrc write was actually *attempted*. Asking KWin to re-read
+    # its config after aborting before any kwinrc step is noise at best.
+    if notify and any(s.file == "kwinrc" and s.writes
+                      and s.outcome not in ("", SKIPPED) for s in plan.steps):
         repair.reconfigure_kwin()
 
     _verify(plan)
@@ -554,6 +573,14 @@ def run(plan: Plan, pre_snapshot: str = "", notify: bool = True) -> Outcome:
     journal.record("restore", snapshot=plan.snapshot_id,
                    directory=str(directory), tally=outcome.tally())
     return outcome
+
+
+def _mark_unreached(plan: Plan, from_index: int) -> None:
+    """Label steps the run never got to, so nothing else judges them."""
+    for step in plan.steps[from_index:]:
+        if step.writes and not step.outcome:
+            step.outcome = SKIPPED
+            step.detail = "not attempted -- the run stopped at an earlier step"
 
 
 def _judge(step: Step, result: repair.WriteResult) -> str:
@@ -598,7 +625,7 @@ def _verify(plan: Plan) -> None:
     applies here identically. This checks the cascade, not the screen.
     """
     for step in plan.steps:
-        if step.outcome in (FAILED, EXTRA):
+        if step.outcome in (FAILED, EXTRA, SKIPPED):
             continue
         now = live_facts(step.file, step.group, step.key)
         if now.resolved != step.want:
@@ -628,7 +655,9 @@ def changelog_row(outcome: Outcome) -> list[str]:
     rows = ["| what | file | old value | new value | revert |",
             "|---|---|---|---|---|"]
     for step in outcome.steps:
-        if not step.writes or step.outcome == FAILED:
+        # Only steps that actually landed. A row claiming `Adwaita -> Layan`
+        # for a step the run never reached is a false record of a change.
+        if not step.writes or step.outcome not in (OK, STALE):
             continue
         revert = (f"`lol-kde restore {outcome.pre_snapshot} --apply --yes`"
                   if outcome.pre_snapshot else "*(no pre-restore snapshot)*")

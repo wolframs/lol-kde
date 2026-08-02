@@ -461,7 +461,7 @@ No changes.
 - `ROADMAP.md`: new "built but not exercised end-to-end" section, and the
   Forgejo push recorded as blocked on an unreachable host.
 
-**`origin` (Forgejo) is one or more commits behind.** `the private mirror` was
+**`origin` (Forgejo) is one or more commits behind.** The private mirror was
 unreachable at the end of this session. `github` is current. Push to `origin`
 when the box is back up; do not re-point remotes or force.
 

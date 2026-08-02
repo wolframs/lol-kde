@@ -1,7 +1,7 @@
 # Incident report: malformed KConfig D-Bus signal caused Plasma session OOM
 
 **Date:** 2026-08-02  
-**Host:** `the-workstation`, Kubuntu 26.04, Plasma Wayland  
+**Host:** Kubuntu 26.04, Plasma Wayland, single-user workstation  
 **Impact:** The active KDE Plasma user session was destroyed and all applications in it were lost. The computer did **not** reboot.  
 **Causal confidence:** High for the triggering action; medium-high for the exact library-level failure mechanism.
 
@@ -110,11 +110,8 @@ array [
 ]
 ```
 
-Relevant transcript:
-
-```text
-<local session transcript>.jsonl
-```
+The session transcript was kept locally and is not published with this
+report.
 
 The key records are lines 131–132 (supported signal capture), 134 and 138
 (malformed emission and observed shape), and 141 (uncompleted corrected retry).
@@ -208,7 +205,7 @@ not needed to prevent recurrence.
 - **Unbounded `dbus-monitor`:** monitors used `timeout` and exited.
 - **Config residue:** the tested file matched the pre-test MD5 before the
   malformed broadcast.
-- **The separate `an unrelated systemd unit` restart loop:** noisy and worth fixing,
+- **An unrelated systemd unit in a restart loop:** noisy and worth fixing,
   but it had been occurring every ten seconds for many hours while memory was
   healthy and did not account for the KDE-wide multi-GiB allocations.
 
@@ -312,9 +309,9 @@ seconds, so this is defense in depth only.
 - [ ] Add optional before/after memory sampling around approved live actions.
 - [ ] Keep the existing backup, snapshot, read-back, and bounded-monitor rules;
       they worked and made this incident diagnosable.
-- [ ] Separately fix the `an unrelated systemd unit` restart storm
-      (`node` is missing from the unit's PATH), since it currently restarts
-      every ten seconds and floods the journal.
+- [ ] Separately fix the unrelated systemd restart storm noted above, since
+      it floods the journal and makes incident triage harder than it needs
+      to be.
 
 ## Useful verification commands
 
@@ -337,7 +334,7 @@ sar -S -W  -f /var/log/sysstat/sa02 -s 18:00:00 -e 18:20:00
 
 # Transcript anchors (do not rerun the emitted command)
 rg -n 'Capture the KConfig notify|hand-emitted|corrected type|gdbus emit' \
-  <local session transcript>.jsonl
+  <your Claude Code session transcript>.jsonl
 ```
 
 ## Bottom line

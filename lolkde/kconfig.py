@@ -100,16 +100,31 @@ def origin(filename: str, group: str, key: str) -> Path | None:
 def entry_state(parser: configparser.ConfigParser, group: str,
                 key: str) -> str:
     """`set`, `deleted` (a `[$d]` tombstone), or `absent`, within one layer."""
+    return _entry(parser, group, key)[0]
+
+
+def _entry(parser: configparser.ConfigParser, group: str,
+           key: str) -> tuple[str, str]:
+    """(state, the option name it was actually found under).
+
+    The second half matters because a flagged key is *stored* under its
+    decorated name. `Theme[$i]=X` -- Kiosk's standard immutability marker, and
+    the normal shape of a locked-down `/etc/xdg/kdeglobals` -- reports `set`
+    here but has no option called `Theme`, so asking configparser for `Theme`
+    afterwards raised `NoOptionError`. Every caller of `get()` inherited that:
+    `restore build`, `repair.inherited_value` and `prune.locate` all died with
+    a traceback on a machine that merely has a policy-managed config file.
+    """
     if not parser.has_section(group):
-        return "absent"
+        return "absent", ""
     for raw in parser.options(group):
         name, flags = split_flags(raw)
         if name != key:
             continue
         if DELETED_FLAG in flags:
-            return "deleted"
-        return "set"
-    return "absent"
+            return "deleted", raw
+        return "set", raw
+    return "absent", ""
 
 
 def tombstoned(path: Path, group: str, key: str) -> bool:
@@ -124,9 +139,13 @@ def tombstoned(path: Path, group: str, key: str) -> bool:
 
 def get(path: Path, group: str, key: str) -> str | None:
     parser = read_ini(path)
-    if entry_state(parser, group, key) != "set":
+    state, option = _entry(parser, group, key)
+    if state != "set":
         return None
-    return (parser.get(group, key) or "").strip()
+    try:
+        return (parser.get(group, option) or "").strip()
+    except (configparser.NoOptionError, configparser.NoSectionError):
+        return None
 
 
 def parse_lookandfeel_defaults(path: Path) -> dict[tuple[str, str], dict[str, str]]:

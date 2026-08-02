@@ -42,6 +42,22 @@ POINTERS = [
     ("wallpaper", ("plasmarc", "Wallpaper", "Image")),
 ]
 
+# The wallpaper and the splash are written as **bare** groups in every real
+# `contents/defaults` -- `[Wallpaper]` and `[KSplash]`, not `[plasmarc][Wallpaper]`
+# and `[ksplashrc][KSplash]`. `parse_lookandfeel_defaults` keys a bare group as
+# `(group, "")`, which matched no POINTERS entry, so `components()` returned
+# neither kind for any theme ever installed.
+#
+# Consequence, found by review on 2026-08-02 and reproduced: `referenced_by()`
+# could not see that a surviving theme needed a wallpaper, so `prune` would
+# quarantine the image the desktop was currently painting and refuse nothing.
+# Checked against all 10 packages on this machine and the shipped Breeze: 10
+# bare `[Wallpaper]`, 6 bare `[KSplash]`, zero in the qualified form.
+BARE_GROUP_ALIASES = {
+    ("plasmarc", "Wallpaper"): ("Wallpaper", ""),
+    ("ksplashrc", "KSplash"): ("KSplash", ""),
+}
+
 
 def look_and_feel_dir() -> Path:
     return paths.data_home() / "plasma/look-and-feel"
@@ -85,7 +101,10 @@ def components(theme_dir: Path) -> dict[str, tuple[str, list[Path]]]:
     declared = kconfig.parse_lookandfeel_defaults(theme_dir / "contents/defaults")
     out: dict[str, tuple[str, list[Path]]] = {}
     for kind, (file, group, key) in POINTERS:
-        name = (declared.get((file, group)) or {}).get(key, "").strip()
+        section = declared.get((file, group))
+        if not section:
+            section = declared.get(BARE_GROUP_ALIASES.get((file, group), ()))
+        name = (section or {}).get(key, "").strip()
         if name:
             out[kind] = (name, [p for p in locate(kind, name) if p.exists()])
     return out
@@ -112,10 +131,35 @@ def is_previous_generation(theme_dir: Path) -> bool | None:
     name = (declared.get(("plasmarc", "Theme")) or {}).get("name", "").strip()
     if not name:
         return None
-    path = style_dir() / name
-    if not path.is_dir():
+
+    # Resolve the style the way KDE does -- across every data dir, highest
+    # priority first -- not just in the user directory. Two false positives
+    # were reproduced by review on 2026-08-02 by looking only at the user copy:
+    #
+    # - Every Breeze-derived theme declares `name=default`. One Plasma 5
+    #   leftover at `~/.local/share/plasma/desktoptheme/default` shadows the
+    #   system style of that name, and condemned *every* such theme at once,
+    #   current ones included, along with the components they exclusively owned.
+    # - A current store theme whose style still ships only `metadata.desktop`
+    #   -- `legacy.py`'s own docstring concedes these exist and still work.
+    #
+    # So: the *resolved* style must lack `metadata.json`, and a system-provided
+    # style is never evidence about a user-installed theme's generation.
+    resolved = None
+    for base in paths.data_dirs():
+        candidate = base / "plasma/desktoptheme" / name
+        if candidate.is_dir():
+            resolved = candidate
+            break
+    if resolved is None:
         return None
-    return not (path / "metadata.json").is_file()
+    if (resolved / "metadata.json").is_file():
+        return False
+    if resolved.parent != style_dir():
+        # The winning style is system-provided. Distro packaging is not a
+        # statement about this theme, and it is not ours to judge either way.
+        return None
+    return True
 
 
 @dataclass
@@ -195,9 +239,17 @@ def build(include_orphan_styles: bool = True) -> Plan:
     plan.kept_themes = sorted(kept)
 
     # Everything a surviving theme -- or the live configuration -- points at.
+    #
+    # "Surviving theme" includes system-wide packages under /usr. They are not
+    # removable, but they hold references, and `build()` used to consider only
+    # the user-level directory while `referenced_by()` walked both. The two
+    # disagreed, so `--drop X` was refused while a plain `prune` removed the
+    # same X as unreferenced. Reproduced by review on 2026-08-02.
     protected: set[str] = set()
-    for name in kept:
-        for _, (_, found) in components(themes[name]).items():
+    survivors = [themes[name] for name in kept]
+    survivors += [d for d in all_theme_dirs() if d.name not in themes]
+    for directory in survivors:
+        for _, (_, found) in components(directory).items():
             protected.update(str(p) for p in found)
     for kind, (file, group, key) in POINTERS:
         value = (live.get((file, group)) or {}).get(key, "").strip()
@@ -234,25 +286,50 @@ def build(include_orphan_styles: bool = True) -> Plan:
     return plan
 
 
-def referenced_by(name: str) -> list[str]:
-    """Which installed global themes point at this component, by any kind.
+def all_theme_dirs() -> list[Path]:
+    """Every installed global theme, user-level and system-wide.
 
-    Includes system packages under `/usr`: they are not ours to remove, but
-    they are very much allowed to be using something.
+    System packages are not ours to remove, but they are very much allowed to
+    be *using* something -- a distro theme under `/usr` pointing at an icon set
+    in `~/.local/share` is an ordinary arrangement, and dropping that icon set
+    breaks it.
     """
-    holders = []
     roots = [look_and_feel_dir()]
-    for directory in paths.data_dirs()[1:]:
-        roots.append(directory / "plasma/look-and-feel")
+    roots += [d / "plasma/look-and-feel" for d in paths.data_dirs()[1:]]
+    out: list[Path] = []
     for root in roots:
-        if not root.is_dir():
-            continue
-        for theme in sorted(root.iterdir()):
-            if not theme.is_dir():
-                continue
-            for _, (component, _) in components(theme).items():
-                if component == name and theme.name not in holders:
-                    holders.append(theme.name)
+        if root.is_dir():
+            out += [d for d in sorted(root.iterdir()) if d.is_dir()]
+    return out
+
+
+def referenced_by(name: str) -> list[str]:
+    """Which installed global themes point at this component, by any kind."""
+    holders = []
+    for theme in all_theme_dirs():
+        for _, (component, _) in components(theme).items():
+            if component == name and theme.name not in holders:
+                holders.append(theme.name)
+    return holders
+
+
+def holders_of(wanted: set[str]) -> list[str]:
+    """Which themes point at any of these *paths*.
+
+    Names are not identifiers and comparing them misses real references.
+    A colour scheme called `Sweet-Ambar-Blue` lives in `SweetAmbarBlue.colors`;
+    `locate()` deliberately matches either form, but a theme's `defaults` and
+    `kdeglobals` only ever store one of them. So `--drop SweetAmbarBlue` was
+    correctly refused while `--drop Sweet-Ambar-Blue` found the same file and
+    was refused by nothing -- reproduced by review on 2026-08-02.
+
+    Resolve both sides to paths first, then ask whether the sets intersect.
+    """
+    holders: list[str] = []
+    for theme in all_theme_dirs():
+        for _, (_, found) in components(theme).items():
+            if any(str(p) in wanted for p in found) and theme.name not in holders:
+                holders.append(theme.name)
     return holders
 
 
@@ -272,11 +349,15 @@ def build_drop(names: list[str]) -> tuple[Plan, list[str]]:
     plan.applied = (live.get(("kdeglobals", "KDE")) or {}).get(
         "LookAndFeelPackage", "")
 
-    live_names = set()
+    # Both sides as paths, not names -- see holders_of(). A name comparison
+    # let `--drop <display name>` past a refusal that `--drop <file stem>`
+    # correctly triggered, for the same file.
+    live_paths: set[str] = set()
     for kind, (file, group, key) in POINTERS:
         value = (live.get((file, group)) or {}).get(key, "").strip()
         if value:
-            live_names.add(value.replace(resolve.AURORAE_PREFIX, ""))
+            value = value.replace(resolve.AURORAE_PREFIX, "")
+            live_paths.update(str(p) for p in locate(kind, value) if p.exists())
 
     for name in names:
         found: list[tuple[str, Path]] = []
@@ -287,10 +368,11 @@ def build_drop(names: list[str]) -> tuple[Plan, list[str]]:
         if not found:
             refusals.append(f"{name}: not found in any user theme directory")
             continue
-        if name in live_names:
-            refusals.append(f"{name}: currently in use")
+        in_use = sorted({str(p) for _, p in found} & live_paths)
+        if in_use:
+            refusals.append(f"{name}: currently in use ({Path(in_use[0]).name})")
             continue
-        holders = referenced_by(name)
+        holders = holders_of({str(p) for _, p in found})
         if holders:
             refusals.append(f"{name}: referenced by {', '.join(holders)}")
             continue
@@ -329,28 +411,68 @@ def check(plan: Plan) -> list[str]:
     return problems
 
 
+def _quarantine_relative(path: Path) -> Path:
+    """Where a removal is filed inside the quarantine directory.
+
+    Relative to whichever allowed root contains it, not blindly to `$HOME`:
+    with `XDG_DATA_HOME` set outside the home directory, `relative_to(HOME)`
+    raised `ValueError`, which no handler caught -- a traceback after the
+    snapshot and after the prompt, part way through moving files, and before
+    `manifest.json` was written.
+
+    Home-relative in the ordinary case, so the quarantine layout and the
+    RESTORE.md wording stay as documented.
+    """
+    try:
+        return path.relative_to(paths.HOME)
+    except ValueError:
+        pass
+    try:
+        return Path("xdg-data-home") / path.relative_to(paths.data_home())
+    except ValueError:
+        raise ValueError("outside every directory prune is allowed to touch") from None
+
+
 def run(plan: Plan) -> tuple[Path, list[Removal], list[str]]:
     """Move the removals into quarantine. Returns (dir, moved, failures)."""
-    quarantine = (snapshot.store() / "pruned" /
-                  time.strftime("%Y-%m-%dT%H-%M-%SZ", time.gmtime()))
-    quarantine.mkdir(parents=True, exist_ok=True)
+    # A second-resolution timestamp with exist_ok=True let two runs in the same
+    # second share a directory, and the second one's manifest.json overwrote
+    # the first's -- leaving the first batch's files on disk, absent from the
+    # only document that says how to put them back, under a heading that tells
+    # you to delete the directory. Use the snapshot id (timestamp + uuid) and
+    # refuse to reuse a directory at all.
+    quarantine = snapshot.store() / "pruned" / snapshot.new_id()
+    quarantine.mkdir(parents=True, exist_ok=False)
     moved: list[Removal] = []
     failures: list[str] = []
     records = []
 
     for removal in plan.remove:
-        relative = removal.path.relative_to(paths.HOME)
+        try:
+            relative = _quarantine_relative(removal.path)
+        except ValueError as exc:
+            failures.append(f"{removal.path}: {exc}")
+            continue
         target = quarantine / relative
         target.parent.mkdir(parents=True, exist_ok=True)
+        record = {"kind": removal.kind, "name": removal.name,
+                  "from": str(removal.path), "to": str(target),
+                  "bytes": removal.size, "reason": removal.reason}
         try:
             shutil.move(str(removal.path), str(target))
         except (OSError, shutil.Error) as exc:
+            # A cross-device move is copy-then-delete, so a failure can leave
+            # the content *in quarantine* while reporting that nothing moved.
+            # RESTORE.md would then omit it and tell the user to delete the
+            # directory. Ask the filesystem rather than assuming.
             failures.append(f"{removal.path}: {exc}")
+            if target.exists():
+                record["partial"] = True
+                record["note"] = f"move reported {exc}; found in quarantine anyway"
+                records.append(record)
             continue
         moved.append(removal)
-        records.append({"kind": removal.kind, "name": removal.name,
-                        "from": str(removal.path), "to": str(target),
-                        "bytes": removal.size, "reason": removal.reason})
+        records.append(record)
 
     (quarantine / "manifest.json").write_text(
         json.dumps({"moved": records, "failures": failures,

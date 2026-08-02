@@ -2,3 +2,6 @@ __pycache__/
 *.py[cod]
 .venv/
 *.egg-info/
+
+# Machine-specific agent notes; loads alongside CLAUDE.md
+CLAUDE.local.md

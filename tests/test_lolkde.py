@@ -2268,5 +2268,236 @@ class TestExceptionsThatEscapedTheirHandlers(unittest.TestCase):
             self.assertEqual(manifest.dependencies_in_tree(root), [])
 
 
+class TestRestoreAbortPath(_RestoreFixture, unittest.TestCase):
+    """ROADMAP listed this path as never having fired. Now it fires here.
+
+    When a step fails, the run stops -- and everything after it was never
+    attempted. `_verify` used to judge those steps anyway, comparing their
+    live values against the snapshot and stamping them DIVERGED: the word this
+    tool uses for "a write landed and went wrong", applied to keys nothing had
+    touched. The printed summary then contradicted the journal, which is what
+    ROADMAP nominates as the record of where a run stopped.
+    """
+
+    def _two_step_plan(self):
+        """Two components differ, in two different files, so two SET steps."""
+        self._make("[Icons]\nTheme=Papirus\n", "[Icons]\nTheme=Tela\n",
+                   "[Icons]\nTheme=Breeze\n", "[Icons]\nTheme=Tela\n")
+
+        # cursorTheme lives in kcminputrc, not kdeglobals. Add it to both
+        # worlds and to the snapshot manifest the way _make does.
+        snap_file = self.snap / "files" / "config" / "kcminputrc"
+        text = "[Mouse]\ncursorTheme=Snap\n"
+        snap_file.write_text(text)
+        rows = json.loads((self.snap / "manifest.json").read_text())
+        rows.append({"path": "config/kcminputrc", "status": "captured",
+                     "source": str(self.live / "kcminputrc"),
+                     "sha256": hashlib.sha256(text.encode()).hexdigest()})
+        (self.snap / "manifest.json").write_text(json.dumps(rows))
+        (self.live / "kcminputrc").write_text("[Mouse]\ncursorTheme=Adwaita\n")
+
+        return restore.build(self.snap, ["icons", "cursor"])
+
+    def test_steps_after_a_failure_are_skipped_not_diverged(self):
+        plan = self._two_step_plan()
+        writes = [s for s in plan.steps if s.writes]
+        if len(writes) < 2:
+            self.skipTest("plan did not produce two writing steps")
+
+        calls = {"n": 0}
+
+        def fail_first(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return repair.WriteResult(*args[:3], args[3] if len(args) > 3 else "",
+                                          repair.FAILED, detail="disk on fire")
+            raise AssertionError("second step must not be attempted")
+
+        with unittest.mock.patch.object(restore, "store",
+                                        return_value=Path(self.tmp.name) / "r"), \
+             unittest.mock.patch.object(repair, "write", side_effect=fail_first):
+            outcome = restore.run(plan, pre_snapshot="", notify=False)
+
+        self.assertTrue(outcome.aborted)
+        self.assertEqual(writes[0].outcome, restore.FAILED)
+        for step in writes[1:]:
+            self.assertEqual(step.outcome, restore.SKIPPED, step.key)
+            self.assertIn("not attempted", step.detail)
+
+    def test_an_unattempted_step_produces_no_changelog_row(self):
+        # A row reading `Adwaita -> Snap` for a write that never happened is a
+        # false record of a change to the machine.
+        plan = self._two_step_plan()
+        writes = [s for s in plan.steps if s.writes]
+        if len(writes) < 2:
+            self.skipTest("plan did not produce two writing steps")
+        for step in writes:
+            step.outcome = restore.SKIPPED
+        outcome = restore.Outcome(Path(self.tmp.name), plan.steps, "snap-1")
+        self.assertEqual(restore.changelog_row(outcome), [])
+
+
+class TestPruneCanSeeEveryPointer(unittest.TestCase):
+    """Found by review 2026-08-02: prune was blind to two of seven components.
+
+    Every real `contents/defaults` writes the wallpaper and splash as **bare**
+    groups -- `[Wallpaper]`, `[KSplash]` -- not `[plasmarc][Wallpaper]`. So
+    `components()` returned neither kind for any theme ever installed, and
+    `referenced_by()` could not see that a surviving theme needed a wallpaper.
+    """
+
+    def _theme(self, root: Path, name: str, body: str) -> Path:
+        d = root / name / "contents"
+        d.mkdir(parents=True)
+        (d / "defaults").write_text(body)
+        return root / name
+
+    def test_a_bare_wallpaper_group_is_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            theme = self._theme(Path(tmp), "T", "[Wallpaper]\nImage=Scenery\n")
+            self.assertEqual(prune.components(theme)["wallpaper"][0], "Scenery")
+
+    def test_a_bare_ksplash_group_is_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            theme = self._theme(Path(tmp), "T", "[KSplash]\nTheme=org.kde.Breeze\n")
+            self.assertEqual(prune.components(theme)["splash"][0], "org.kde.Breeze")
+
+    def test_the_qualified_form_still_works(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            theme = self._theme(Path(tmp), "T",
+                                "[plasmarc][Wallpaper]\nImage=Scenery\n")
+            self.assertEqual(prune.components(theme)["wallpaper"][0], "Scenery")
+
+    def test_every_installed_theme_on_this_machine_parses(self):
+        # The regression that mattered was silent: no error, just an empty
+        # result for two kinds, on every theme.
+        root = prune.look_and_feel_dir()
+        if not root.is_dir():
+            self.skipTest("no user look-and-feel packages installed")
+        declared = {}
+        for theme in sorted(p for p in root.iterdir() if p.is_dir()):
+            for kind, (name, _) in prune.components(theme).items():
+                declared.setdefault(kind, []).append(name)
+        self.assertIn("wallpaper", declared,
+                      "no installed theme declares a wallpaper prune can see")
+
+
+class TestPruneComparesPathsNotNames(unittest.TestCase):
+    """A colour scheme's display name is not its filename.
+
+    `Sweet-Ambar-Blue` lives in `SweetAmbarBlue.colors`. `locate()` matches
+    either, but the live config and a theme's defaults only ever store one --
+    so `--drop <display name>` slipped past a refusal that `--drop <stem>`
+    correctly triggered, for the same file.
+    """
+
+    def test_holders_of_matches_by_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            schemes = root / "color-schemes"
+            schemes.mkdir(parents=True)
+            (schemes / "SweetAmbarBlue.colors").write_text(
+                "[General]\nName=Sweet-Ambar-Blue\n")
+            lnf = root / "plasma/look-and-feel/Sweet/contents"
+            lnf.mkdir(parents=True)
+            (lnf / "defaults").write_text(
+                "[kdeglobals][General]\nColorScheme=SweetAmbarBlue\n")
+
+            with unittest.mock.patch.object(paths, "data_home",
+                                            return_value=root), \
+                 unittest.mock.patch.object(paths, "data_dirs",
+                                            return_value=[root]):
+                def existing(name):
+                    return {str(p) for p in prune.locate("colour-scheme", name)
+                            if p.exists()}
+
+                # Both spellings reach the same file on disk...
+                by_stem = existing("SweetAmbarBlue")
+                by_display = existing("Sweet-Ambar-Blue")
+                self.assertEqual(by_stem, by_display)
+                self.assertTrue(by_stem)
+
+                # ...so both must find the theme that needs it. Before the
+                # fix, referenced_by("Sweet-Ambar-Blue") returned [] while
+                # referenced_by("SweetAmbarBlue") returned ["Sweet"].
+                self.assertEqual(prune.holders_of(by_display), ["Sweet"])
+                self.assertEqual(prune.holders_of(by_stem), ["Sweet"])
+                self.assertEqual(prune.referenced_by("Sweet-Ambar-Blue"), [])
+
+
+class TestStripKeyKeepsBytes(unittest.TestCase):
+    """KDE stores paths as raw bytes; a filename need not be valid UTF-8."""
+
+    def test_non_utf8_bytes_elsewhere_in_the_file_survive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "kdeglobals"
+            f.write_bytes(b"[General]\nWallpaper=/pic/\xff\xfe.png\n"
+                          b"[Icons]\nTheme=Tela\n")
+            repair._strip_key(f, "Icons", "Theme")
+            after = f.read_bytes()
+        self.assertIn(b"/pic/\xff\xfe.png", after)
+        self.assertNotIn(b"\xef\xbf\xbd", after)      # U+FFFD
+        self.assertNotIn(b"Theme=Tela", after)
+
+    def test_crlf_is_not_rewritten(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "kdeglobals"
+            f.write_bytes(b"[Icons]\r\nTheme=Tela\r\nOther=x\r\n")
+            repair._strip_key(f, "Icons", "Theme")
+            self.assertEqual(f.read_bytes(), b"[Icons]\r\nOther=x\r\n")
+
+
+class TestKioskImmutabilityMarkers(unittest.TestCase):
+    """`Key[$i]` is the standard Kiosk lock, and it crashed everything.
+
+    A flagged key is stored under its decorated name, so `entry_state` said
+    `set` while `parser.get(group, key)` raised NoOptionError. Any machine with
+    a policy-managed `/etc/xdg/kdeglobals` got a traceback out of `restore`,
+    `prune` and `repair.inherited_value`.
+    """
+
+    def test_an_immutable_key_reads_its_value(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "kdeglobals"
+            f.write_text("[Icons]\nTheme[$i]=BreezeLocked\n")
+            self.assertEqual(kconfig.get(f, "Icons", "Theme"), "BreezeLocked")
+
+    def test_an_expanding_key_reads_its_value(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "scheme.colors"
+            f.write_text("[General]\nName[$e]=$HOME theme\n")
+            self.assertEqual(kconfig.get(f, "General", "Name"), "$HOME theme")
+
+    def test_a_tombstone_still_reads_as_deleted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "kdeglobals"
+            f.write_text("[Icons]\nTheme[$d]\n")
+            self.assertIsNone(kconfig.get(f, "Icons", "Theme"))
+            self.assertTrue(kconfig.tombstoned(f, "Icons", "Theme"))
+
+
+class TestWriteRefusesASymlinkedConfig(unittest.TestCase):
+    """unpin() refused one; write() wrote straight through it into git."""
+
+    def test_write_refuses_a_symlinked_config_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / "config"
+            config.mkdir()
+            dotfiles = root / "dotfiles"
+            dotfiles.mkdir()
+            real = dotfiles / "kdeglobals"
+            real.write_text("[Icons]\nTheme=Papirus\n")
+            (config / "kdeglobals").symlink_to(real)
+
+            with unittest.mock.patch.object(paths, "config_home",
+                                            return_value=config):
+                result = repair.write("kdeglobals", "Icons", "Theme", "Tela",
+                                      notify=False)
+            self.assertEqual(result.outcome, repair.FAILED)
+            self.assertIn("symlink", result.detail)
+            self.assertEqual(real.read_text(), "[Icons]\nTheme=Papirus\n")
+
+
 if __name__ == "__main__":
     unittest.main()

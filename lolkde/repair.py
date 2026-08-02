@@ -79,6 +79,20 @@ def write(file: str, group: str, key: str, value: str | None,
         return WriteResult(file, group, key, value or "", FAILED,
                            detail="kwriteconfig6 not found")
 
+    # The same refusals `unpin()` applies, minus "must already exist" -- a
+    # first write legitimately creates the file. Without this, a `kdeglobals`
+    # symlinked into a dotfiles repo was written straight through by `write()`
+    # while `unpin()` refused it, so a mixed restore half-committed to git and
+    # half declined. The guard belongs to the operation, not to one route.
+    if user_layer.exists() or user_layer.is_symlink():
+        refusal = _safe_to_edit(user_layer)
+        if refusal:
+            return WriteResult(file, group, key, value or "", FAILED,
+                               detail=refusal)
+    elif os.geteuid() == 0:
+        return WriteResult(file, group, key, value or "", FAILED,
+                           detail="refusing to edit config as root")
+
     command = [tool, "--file", file, "--group", group, "--key", key]
     if notify:
         command.insert(1, "--notify")
@@ -123,12 +137,12 @@ def inherited_value(file: str, group: str, key: str) -> str | None:
     layers = paths.config_layers()[:-1]          # drop ~/.config itself
     found = None
     for directory in layers:
-        parser = kconfig.read_ini(directory / file)
-        state = kconfig.entry_state(parser, group, key)
+        state, option = kconfig._entry(kconfig.read_ini(directory / file),
+                                       group, key)
         if state == "deleted":
             found = None
         elif state == "set":
-            found = (parser.get(group, key) or "").strip()
+            found = kconfig.get(directory / file, group, key)
     return found
 
 
@@ -168,22 +182,36 @@ def _strip_key(path: Path, group: str, key: str) -> list[str]:
     question C. Removing the line is the only way back.
 
     Returns the lines removed, so the caller can journal them.
+
+    Works in **bytes**, not text. It used to read with `errors="replace"` and
+    write UTF-8 back, which silently rewrote every byte in the file that was
+    not valid UTF-8 -- and KDE stores paths as raw bytes, so a wallpaper under
+    a filename that is not valid UTF-8 (legal on Linux) came back as U+FFFD.
+    Reproduced by review on 2026-08-02: `/home/u/pic/\xff\xfe.png` became
+    `/home/u/pic/\xef\xbf\xbd\xef\xbf\xbd.png`. `_verify` only re-reads the one
+    key that was unpinned, so nothing noticed. Reading bytes also stops
+    `read_text`'s universal-newline translation from converting a CRLF file.
+
+    Only the key *name* is decoded, and only to compare it.
     """
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines(True)
-    header = f"[{group}]"
-    out: list[str] = []
+    raw = path.read_bytes()
+    lines = raw.splitlines(keepends=True)
+    header = f"[{group}]".encode()
+    out: list[bytes] = []
     removed: list[str] = []
     inside = False
     for line in lines:
         stripped = line.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
+        if stripped.startswith(b"[") and stripped.endswith(b"]"):
             inside = stripped == header
             out.append(line)
             continue
         if inside and stripped:
-            name, _ = kconfig.split_flags(stripped.split("=", 1)[0].strip())
+            candidate = stripped.split(b"=", 1)[0].strip()
+            name, _ = kconfig.split_flags(
+                candidate.decode("utf-8", errors="replace"))
             if name == key:
-                removed.append(line)
+                removed.append(line.decode("utf-8", errors="replace"))
                 continue
         out.append(line)
 
@@ -194,8 +222,8 @@ def _strip_key(path: Path, group: str, key: str) -> list[str]:
         handle, temporary = tempfile.mkstemp(dir=str(path.parent),
                                              prefix=path.name + ".lolkde")
         try:
-            with os.fdopen(handle, "w", encoding="utf-8") as stream:
-                stream.write("".join(out))
+            with os.fdopen(handle, "wb") as stream:
+                stream.write(b"".join(out))
                 stream.flush()
                 os.fsync(stream.fileno())
             os.chmod(temporary, mode)

@@ -25,8 +25,8 @@ memory. If you defer something, it goes here.
 |---|---|---|
 | `--prune` for old snapshots | no pressure yet; ~500 KiB each | `docs/restore-design.md` §retention |
 | `--with-assets` full theme capture | ~55 MB/snapshot; needs content-addressing first | same |
-| Patching Layan's `#g1000` | cosmetic log spam only, upstream's to fix | `CLAUDE.md` |
-| Fixing the `_x1.25` Aurorae variants | detected, not repaired; nobody here uses them | `CLAUDE.md` |
+| Patching Layan's `#g1000` | cosmetic log spam only, upstream's to fix | `docs/kde-notes.md` |
+| Fixing the `_x1.25` Aurorae variants | detected, not repaired; nobody here uses them | `docs/kde-notes.md` |
 
 ## Built but not exercised end-to-end
 
@@ -36,7 +36,7 @@ first run as a test rather than a routine.
 | thing | why not | what to run |
 |---|---|---|
 | `restore --apply` for **more than one component at once** | turn 9 exercised `--component icons`. A multi-component run, and one that hits `SET` rather than `UNPIN`, are still only covered by unit tests | pin two pointers by hand, restore both |
-| `restore` aborting mid-run | the `stop at first failure` path, exit code 3 and the three-line recovery message have never fired for real | make one step fail (e.g. chmod a config file read-only) and check the journal names where it stopped |
+| `restore --apply` aborting mid-run **on a live desktop** | the path is now exercised by `TestRestoreAbortPath` against a real two-step plan, and it found a real defect (unattempted steps reported as `diverged`). Exit code 3 and the recovery message still have not fired against `~/.config` | make one step fail (e.g. chmod a config file read-only) and check the journal names where it stopped |
 
 Cleared on turn 9 — all run for real against this desktop:
 
@@ -55,7 +55,7 @@ Cleared on turn 9 — all run for real against this desktop:
 
 ## Blocked
 
-`origin` (Forgejo, `the private mirror`) came back on turn 11 and both remotes
+`origin` (a Forgejo instance on the author's LAN) came back on turn 11 and both remotes
 are level. It goes down for maintenance periodically; when it does, push
 `github` and wait — do not re-point the remote and do not force.
 
@@ -66,7 +66,7 @@ are level. It goes down for maintenance periodically; when it does, push
 The **`contrast` KWin effect** row is gone as of turn 13. It was never a
 blocker: KWin 6.6 has no such effect, so `contrastEnabled=true` was a Plasma 5
 fossil being silently ignored rather than a feature failing to load. See
-`CLAUDE.md`. The key has been removed from `kwinrc`.
+`docs/kde-notes.md`. The key has been removed from `kwinrc`.
 
 Test C's answer forced a new mechanism rather than a smaller feature — see
 `docs/restore-design.md` §1a. The 2026-08-02 session-loss incident constrains

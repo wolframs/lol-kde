@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import http.client
 import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -35,13 +37,41 @@ class DownloadTarget:
     mimetype: str
 
 
+def encode_url(url: str) -> str:
+    """Percent-encode the parts of a store URL that the store did not.
+
+    Store download links end in the uploader's original filename, spaces and
+    all: `.../Gently-Nebula-Noir No Logo.jpg`. `http.client` refuses to put a
+    raw space in a request line -- correctly, it would break the protocol --
+    and raises `InvalidURL`, which is an HTTPException and so sails past every
+    handler that expects URLError. One uploader's filename killed a nineteen
+    component install with a traceback.
+
+    Only the path and query are touched, and characters that are already
+    escaped are left alone, so encoding twice is harmless.
+    """
+    parts = urllib.parse.urlsplit(url)
+    return urllib.parse.urlunsplit((
+        parts.scheme,
+        parts.netloc,
+        urllib.parse.quote(parts.path, safe="/%:@!$&'()*+,;="),
+        urllib.parse.quote(parts.query, safe="/%:@!$&'()*+,;=?&"),
+        parts.fragment,
+    ))
+
+
 def _get(url: str) -> bytes:
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    request = urllib.request.Request(encode_url(url),
+                                     headers={"User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
             return response.read()
     except urllib.error.URLError as exc:
         raise StoreError(f"{url}: {exc}") from exc
+    except http.client.HTTPException as exc:
+        # InvalidURL and friends are HTTPExceptions, not URLErrors. Uncaught,
+        # they escape as a traceback and abort a whole multi-item install.
+        raise StoreError(f"{url}: {type(exc).__name__}: {exc}") from exc
 
 
 def _ocs(root: ET.Element) -> ET.Element:
@@ -133,10 +163,13 @@ def fetch_download(host: str, content_id: str, index: int = 1) -> DownloadTarget
 
 def download(target: DownloadTarget, destination: Path) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    request = urllib.request.Request(target.url, headers={"User-Agent": USER_AGENT})
+    request = urllib.request.Request(encode_url(target.url),
+                                     headers={"User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
             destination.write_bytes(response.read())
     except urllib.error.URLError as exc:
         raise StoreError(f"download failed: {exc}") from exc
+    except http.client.HTTPException as exc:
+        raise StoreError(f"download failed: {type(exc).__name__}: {exc}") from exc
     return destination

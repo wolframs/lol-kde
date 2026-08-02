@@ -298,6 +298,19 @@ repeat it without re-deriving it.
 - The description and `X-KPackage-Dependencies` **disagree**. Layan's description
   names 4 components; its manifest names 7, and only the manifest mentions the
   cursor theme. Use both.
+- **Uploads break HTTP and tar assumptions, and the failures are unhandled by
+  default.** Two found on turn 10, both fatal to a whole multi-item install:
+  a filename with a **space** (`Gently-Nebula-Noir No Logo.jpg`) goes verbatim
+  into the signed download URL and `http.client` raises `InvalidURL` — an
+  `HTTPException`, not a `URLError`. And an icon theme with one **absolute
+  symlink** among thousands of files makes `tarfile`'s `data` filter raise
+  `AbsoluteLinkError` — a `TarError`, not an `OSError`. Neither is in the
+  exception family anyone thinks to catch. Encode store URLs; skip unsafe
+  archive members individually rather than failing the archive.
+- **KDE normalises case when applying a theme.** `Gently-Dark-Global-6`
+  declares `widgetStyle=breeze`; `plasma-apply-lookandfeel` writes `Breeze`.
+  Qt resolves style names case-insensitively, so a raw comparison reports
+  drift on a theme that was just applied cleanly.
 - **One store entry ships several files.** Layan cursors has three variants;
   Layan kvantum has `Layan.tar.xz` and `Layan-solid.tar.xz`. Fetching download #1
   silently installs the wrong one. Match the filename against the wanted
@@ -321,23 +334,26 @@ They load, but plasmashell was observed aborting inside
 Aurorae decorations use `metadata.desktop` as their **normal** format — never
 flag those as legacy.
 
-## Machine state as of 2026-08-02 (end of turn 9)
+## Machine state as of 2026-08-02 (end of turn 10)
 
 Do not trust this section blind — run `lol-kde doctor -v` and
 `lol-kde diff` first. It is a starting point, not a source of truth.
 
-- Applied: `com.github.vinceliuice.Layan`, `7/7 ok` — and **confirmed on
-  screen by Wolfram** at the end of turn 9, not just by the tool. That
-  distinction is the whole point of the `7/7 ok` rule above
+- Applied: **`Gently-Dark-Global-6`** since turn 10, `7/7 ok`. Before that,
+  `com.github.vinceliuice.Layan` — confirmed on screen by Wolfram at the end
+  of turn 9, not just by the tool. That distinction is the whole point of the
+  `7/7 ok` rule above. Revert with
+  `lol-kde apply com.github.vinceliuice.Layan`
 - Every critical path has now been run against this live desktop: `install`,
   `apply`, `restore --apply`, `legacy --remove`, `please`, `diff`, `snapshot`.
   See `CHANGELOG.md` turn 9 for what each one broke
 - Extra packages from the turn-9 `install` test: Nostrum's aurorae theme,
   Plasma style, wallpaper and colour scheme. Harmless, not applied. The
   removal command is in the turn-9 CHANGELOG row
-- The `Gently` Plasma style was **deleted** by the `legacy --remove` test.
-  Re-download from the store if it is ever wanted; snapshots do not carry
-  theme assets
+- The `Gently` Plasma style was deleted by turn 9's `legacy --remove` test
+  and **came back** on turn 10 as a dependency of `Gently-Dark-Global-6`. It
+  is legacy `metadata.desktop`, and applying the theme did *not* trigger the
+  documented plasmashell crash — one observation, not a guarantee
 - Kvantum: theme `Layan`, `reduce_window_opacity=15` (backup `.bak` has `0`)
 - Window translucency: **working**, confirmed visually
 - Decoration: `org.kde.kwin.aurorae.v2` pinned in `~/.config/kwinrc`;

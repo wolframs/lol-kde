@@ -470,6 +470,13 @@ def _same_pointer(kind: str, a: str, b: str) -> bool:
     if kind == "color-scheme":
         norm = lambda s: s.lower().replace("-", "").replace(" ", "").replace("_", "")
         return norm(a) == norm(b)
+    if kind == "widget-style":
+        # Qt resolves style names case-insensitively, and KDE normalises the
+        # case when it applies a theme: Gently-Dark-Global-6 declares
+        # `widgetStyle=breeze` and plasma-apply-lookandfeel writes `Breeze`.
+        # Comparing raw reported drift on a theme that had just been applied
+        # cleanly -- a false positive on every theme that spells it lowercase.
+        return a.lower() == b.lower()
     return False
 
 

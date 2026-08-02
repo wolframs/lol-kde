@@ -41,23 +41,53 @@ def is_archive(path: Path) -> bool:
     return zipfile.is_zipfile(path) or tarfile.is_tarfile(path)
 
 
-def _safe_extract(archive: Path, into: Path) -> Path:
-    """Unpack an archive, refusing entries that escape the destination."""
+def _skip_unsafe(skipped: list[str]):
+    """A tar filter that drops dangerous members instead of aborting.
+
+    `filter="data"` is the right policy and the wrong failure mode. It raises
+    on the first member it dislikes, which kills the whole archive -- and real
+    icon themes trip it routinely: Gently's `Noir-Gently-White-Blue-Dark-Icons`
+    ships `apps/48/kmousetool.svg` as a symlink to an absolute path, one entry
+    out of thousands. Refusing that one link is correct; refusing the theme
+    because of it is not, and refusing the remaining eighteen dependencies
+    because of *that* is absurd.
+
+    So: same policy, per-member. Anything `data` rejects is skipped and
+    recorded, and the caller reports the count rather than pretending the
+    extraction was complete.
+    """
+    def filter_member(member, path):
+        try:
+            return tarfile.data_filter(member, path)
+        except tarfile.FilterError:
+            skipped.append(member.name)
+            return None
+    return filter_member
+
+
+def _safe_extract(archive: Path, into: Path) -> tuple[Path, list[str]]:
+    """Unpack an archive, refusing entries that escape the destination.
+
+    Returns the directory and the members that were skipped as unsafe.
+    """
     into.mkdir(parents=True, exist_ok=True)
+    skipped: list[str] = []
     if zipfile.is_zipfile(archive):
         with zipfile.ZipFile(archive) as zf:
+            safe = []
             for member in zf.namelist():
                 resolved = (into / member).resolve()
-                if not resolved.is_relative_to(into.resolve()):
-                    raise ValueError(f"archive escapes destination: {member}")
-            zf.extractall(into)
+                if resolved.is_relative_to(into.resolve()):
+                    safe.append(member)
+                else:
+                    skipped.append(member)
+            zf.extractall(into, members=safe)
     elif tarfile.is_tarfile(archive):
         with tarfile.open(archive) as tf:
-            # filter="data" strips absolute paths, symlink escapes and specials.
-            tf.extractall(into, filter="data")
+            tf.extractall(into, filter=_skip_unsafe(skipped))
     else:
         raise ValueError(f"unrecognised archive format: {archive.name}")
-    return into
+    return into, skipped
 
 
 def _single_root(directory: Path) -> Path | None:
@@ -162,15 +192,20 @@ def place_archive(archive: Path, route, name: str, force: bool) -> tuple[str, st
                   else f"not an archive; installed {archive.name} as-is")
         return "installed", detail, destination
 
-    extracted = _safe_extract(archive, archive.parent / "unpacked")
+    extracted, skipped = _safe_extract(archive, archive.parent / "unpacked")
     try:
         destinations = _install_tree(extracted, route.target, name, force)
     except FileExistsError as exc:
         return "skipped", f"already installed at {exc.args[0]} (use --force)", None
-    detail = ("" if len(destinations) == 1
-              else f"{len(destinations)} packages: "
-                   + ", ".join(d.name for d in destinations))
-    return "installed", detail, destinations[0]
+    notes = []
+    if len(destinations) != 1:
+        notes.append(f"{len(destinations)} packages: "
+                     + ", ".join(d.name for d in destinations))
+    if skipped:
+        notes.append(f"{len(skipped)} unsafe entr"
+                     f"{'y' if len(skipped) == 1 else 'ies'} skipped "
+                     f"(e.g. {skipped[0]})")
+    return "installed", "; ".join(notes), destinations[0]
 
 
 def install_from_store(node, *, force: bool = False, dry_run: bool = False):
@@ -197,7 +232,8 @@ def install_from_store(node, *, force: bool = False, dry_run: bool = False):
             return place_archive(archive, route, item.name, force)
         except store.StoreError as exc:
             return "failed", str(exc), None
-        except (OSError, ValueError, RuntimeError) as exc:
+        except (OSError, ValueError, RuntimeError, tarfile.TarError,
+                zipfile.BadZipFile) as exc:
             return "failed", str(exc), None
 
 
@@ -254,5 +290,6 @@ def install_dependency(
             status, detail, destination = place_archive(
                 archive, spec, item.name, force)
             return InstallResult(dependency, item, status, detail, destination)
-        except (OSError, ValueError, RuntimeError) as exc:
+        except (OSError, ValueError, RuntimeError, tarfile.TarError,
+                zipfile.BadZipFile) as exc:
             return InstallResult(dependency, item, "failed", str(exc))

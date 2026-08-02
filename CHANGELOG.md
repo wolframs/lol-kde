@@ -12,6 +12,66 @@ Wolfram. Turn 1 is the first message after the context compaction on
 
 ---
 
+## Turn 10 — Gently, and three crashes on the way to it
+
+Wolfram asked for Gently to be found on opendesktop.org, installed with
+`please`, and applied if it reported no errors. It took three attempts,
+because each one hit a different unhandled failure. The third was clean.
+
+### machine
+
+| what | change | revert |
+|---|---|---|
+| global theme | `com.github.vinceliuice.Layan` → **`Gently-Dark-Global-6`**, applied and verified `7/7 ok` | `lol-kde apply com.github.vinceliuice.Layan` |
+| installed packages | `Gently-Dark-Global-6` and 19 declared components: Gently Plasma style (the one turn 9 deleted, now back), Kvantum theme, colour scheme, splash, two Aurorae decorations, four icon themes, GTK theme, six wallpapers | `lol-kde legacy` will not remove these; delete by hand under `~/.local/share` |
+| decoration pin | rewritten again by `apply`'s repair, exactly as turn 9 predicted it would be on every apply | — |
+
+Snapshots: `…-3ad0` (manual, pre-install) plus automatic ones from each
+`please` attempt and the `apply`.
+
+`plasmashell` survived the apply — same pid, nothing in the journal. Worth
+recording because Gently's Plasma style **is** legacy `metadata.desktop`, so
+this was the documented `KSvg::FrameSvg::mask()` crash path and it did not
+fire. One observation, not a guarantee.
+
+The legacy scanner's reference tracking works: `Gently` now reports as
+`needed by Gently-Dark-Global-6` and is protected from `--remove`.
+
+### repo — three crashes, three fixes
+
+**1. `tarfile.AbsoluteLinkError`, unhandled.** Gently's
+`Noir-Gently-White-Blue-Dark-Icons` ships one symlink to an absolute path
+among thousands of files. `filter="data"` is the right policy with the wrong
+failure mode: it raises on the first member it dislikes, killing the archive —
+and since `AbsoluteLinkError` is a `TarError`, not an `OSError`, no handler
+caught it and the whole nineteen-component install died with a traceback.
+
+Now the same policy is applied per member: anything the filter rejects is
+skipped and *reported* (`1 unsafe entry skipped (e.g. …)`), never silently.
+The zip path got the same treatment. Handlers widened to `tarfile.TarError`
+and `zipfile.BadZipFile`. A traversal entry is still refused — the failure
+mode changed, the policy did not.
+
+**2. `http.client.InvalidURL`, unhandled.** Gently ships a wallpaper called
+`Gently-Nebula-Noir No Logo.jpg`, and the store puts that filename verbatim
+into the signed download URL. A raw space cannot go in an HTTP request line,
+so `http.client` raised — and `InvalidURL` is an `HTTPException`, not a
+`URLError`, so it too sailed past every handler and aborted the run.
+
+`store.encode_url()` now percent-encodes the path and query, leaves the
+signing token alone, and is idempotent. Both request paths use it, and both
+catch `HTTPException`.
+
+**3. False drift on widget style.** `Gently-Dark-Global-6` declares
+`widgetStyle=breeze`; `plasma-apply-lookandfeel` writes `Breeze`. Qt resolves
+style names case-insensitively, so the audit was reporting drift on a theme it
+had just applied cleanly — and would have on every theme spelling it
+lowercase. `_same_pointer()` now folds case for widget styles.
+
+149 → 160 tests.
+
+---
+
 ## Turn 9 — every critical path run for real
 
 Wolfram idled the machine deliberately so the destructive paths could be

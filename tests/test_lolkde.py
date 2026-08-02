@@ -10,6 +10,9 @@ import inspect
 import json
 import os
 import sys
+import http.client
+import tarfile
+import urllib.error
 import tempfile
 import unittest
 from pathlib import Path
@@ -590,6 +593,15 @@ class TestPointerEquivalence(unittest.TestCase):
             live={("kdeglobals", "General"): {"ColorScheme": "Stone"}},
         )
         self.assertIn("Sweet-Ambar-Blue", rows[0].note)
+
+    def test_widget_style_case_is_not_drift(self):
+        # Gently-Dark-Global-6 declares `widgetStyle=breeze`, and KDE's own
+        # plasma-apply-lookandfeel writes `Breeze`. Seen live 2026-08-02:
+        # a theme reported drift immediately after applying it cleanly.
+        self.assertTrue(resolve._same_pointer("widget-style", "breeze", "Breeze"))
+        self.assertTrue(resolve._same_pointer("widget-style", "kvantum", "Kvantum"))
+        # Different styles are still different.
+        self.assertFalse(resolve._same_pointer("widget-style", "breeze", "fusion"))
 
     def test_normalisation_does_not_leak_to_other_kinds(self):
         rows = resolve.audit(
@@ -1467,6 +1479,121 @@ class TestBareFileDownloads(unittest.TestCase):
                 plain, self._Route(target), "Nostrum", force=False)
             self.assertEqual(status, "skipped")
             self.assertEqual((target / "Nostrum.colors").read_text(), "existing")
+
+
+class TestUnsafeArchiveMembers(unittest.TestCase):
+    """One bad symlink must not cost you the archive, or the whole run.
+
+    Found live on 2026-08-02 installing Gently: the icon theme
+    Noir-Gently-White-Blue-Dark-Icons ships one absolute symlink among
+    thousands of files. `filter="data"` raised AbsoluteLinkError, which no
+    handler caught, so `please` died with a traceback partway through a
+    nineteen-component install.
+    """
+
+    def _tar_with_absolute_link(self, path: Path) -> None:
+        import tarfile as _tar
+        with _tar.open(path, "w") as handle:
+            payload = _tar.TarInfo("Theme/index.theme")
+            payload.size = 0
+            handle.addfile(payload)
+            link = _tar.TarInfo("Theme/apps/48/kmousetool.svg")
+            link.type = _tar.SYMTYPE
+            link.linkname = "/usr/share/icons/hicolor/48x48/apps/kmousetool.svg"
+            handle.addfile(link)
+
+    def test_the_unsafe_member_is_skipped_and_the_rest_extracted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / "icons.tar"
+            self._tar_with_absolute_link(archive)
+            into, skipped = install._safe_extract(archive, Path(tmp) / "out")
+            self.assertEqual(skipped, ["Theme/apps/48/kmousetool.svg"])
+            self.assertTrue((into / "Theme" / "index.theme").is_file())
+            # The absolute link must not exist -- skipping it is the point.
+            self.assertFalse((into / "Theme/apps/48/kmousetool.svg").exists())
+
+    def test_the_skip_is_reported_not_swallowed(self):
+        class _Route:
+            uses_kpackage = False
+            kpackage_type = ""
+            uncompress = "always"
+
+            def __init__(self, target):
+                self.target = target
+
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / "icons.tar"
+            self._tar_with_absolute_link(archive)
+            status, detail, _ = install.place_archive(
+                archive, _Route(Path(tmp) / "icons"), "Theme", force=False)
+        self.assertEqual(status, "installed")
+        self.assertIn("1 unsafe entry skipped", detail)
+        self.assertIn("kmousetool", detail)
+
+    def test_a_traversal_entry_is_still_refused(self):
+        # Relaxing the failure mode must not relax the policy.
+        import tarfile as _tar
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / "evil.tar"
+            with _tar.open(archive, "w") as handle:
+                escaping = _tar.TarInfo("../escaped.txt")
+                escaping.size = 0
+                handle.addfile(escaping)
+            into, skipped = install._safe_extract(archive, Path(tmp) / "out")
+            self.assertEqual(skipped, ["../escaped.txt"])
+            # Assert inside the with-block: once the temp dir is gone, "the
+            # escaped file does not exist" passes for the wrong reason.
+            self.assertFalse((Path(tmp) / "escaped.txt").exists())
+            self.assertEqual(list(into.rglob("*")), [])
+
+    def test_archive_errors_are_caught_by_the_install_paths(self):
+        # The traceback happened because AbsoluteLinkError is a TarError, and
+        # the handlers only listed OSError/ValueError/RuntimeError.
+        source = inspect.getsource(install)
+        self.assertIn("tarfile.TarError", source)
+        self.assertIn("zipfile.BadZipFile", source)
+        self.assertTrue(issubclass(tarfile.AbsoluteLinkError, tarfile.TarError))
+
+
+class TestStoreUrlEncoding(unittest.TestCase):
+    """Uploaders' filenames end up verbatim in signed download URLs.
+
+    Found live on 2026-08-02: Gently ships a wallpaper called
+    `Gently-Nebula-Noir No Logo.jpg`, and the space in the signed URL made
+    http.client raise InvalidURL. That is an HTTPException, not a URLError,
+    so nothing caught it and a nineteen-component install died partway.
+    """
+
+    def test_a_space_in_the_filename_is_encoded(self):
+        encoded = store.encode_url(
+            "https://host/api/files/download/j/TOKEN/Gently-Nebula No Logo.jpg")
+        self.assertNotIn(" ", encoded)
+        self.assertIn("%20", encoded)
+
+    def test_encoding_is_idempotent(self):
+        once = store.encode_url("https://host/a%20b/c d.jpg")
+        self.assertEqual(store.encode_url(once), once)
+
+    def test_the_signing_token_survives_untouched(self):
+        # JWT-ish tokens carry dots, dashes and underscores in the path.
+        token = "eyJ0eXAiOiJKV1Qi.eyJpZCI6MTU4.dSmmTr9E-4Mt_AG6"
+        url = f"https://host/api/files/download/j/{token}/name.jpg"
+        self.assertIn(token, store.encode_url(url))
+
+    def test_query_strings_keep_their_separators(self):
+        url = "https://host/p?a=1&b=2#frag"
+        self.assertEqual(store.encode_url(url), url)
+
+    def test_invalid_url_is_an_httpexception_not_a_urlerror(self):
+        # The reason the handler had to be widened.
+        self.assertTrue(issubclass(http.client.InvalidURL,
+                                   http.client.HTTPException))
+        self.assertFalse(issubclass(http.client.InvalidURL,
+                                    urllib.error.URLError))
+
+    def test_the_store_layer_catches_it(self):
+        source = inspect.getsource(store)
+        self.assertIn("http.client.HTTPException", source)
 
 
 class TestDownloadVariants(unittest.TestCase):

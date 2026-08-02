@@ -34,14 +34,21 @@ first run as a test rather than a routine.
 
 | thing | why not | what to run |
 |---|---|---|
-| **`restore --apply` against the live session** | the write path runs for real in the test suite, but only against a temporary `XDG_CONFIG_HOME` with the session bus deliberately switched off. It has never written to this desktop | pin an icon theme by hand, `lol-kde restore <id> --apply --component icons`, confirm the desktop follows |
-| **`repair.unpin()` on a live desktop** | the two-step (§1a) is reasoned from question A's merge behaviour, not observed live. If step 1's `--notify` does *not* leave clients holding the inherited value, step 2 is silently stale | the same test as above — the icon theme is the cheapest visible pointer |
-| auto-snapshot inside `apply` | re-applying a global theme carries the documented plasmashell crash in `KSvg::FrameSvg::mask()`, and the machine was in use | `lol-kde apply com.github.vinceliuice.Layan`, expect the snapshot line, then `7/7 ok` |
-| auto-snapshot inside `install` | needs a theme with missing dependencies | `lol-kde install <theme>` |
-| auto-snapshot inside `legacy --remove` | destructive; nothing needed removing | `lol-kde legacy` first, then `--remove` |
+| auto-snapshot inside `legacy --remove` | destructive, and the three removable packages are re-downloadable but not by this tool | `lol-kde legacy` first, then `--remove` |
+| `restore --apply` for **more than one component at once** | turn 9 exercised `--component icons`. A multi-component run, and one that hits `SET` rather than `UNPIN`, are still only covered by unit tests | pin two pointers by hand, restore both |
+| `restore` aborting mid-run | the `stop at first failure` path, exit code 3 and the three-line recovery message have never fired for real | make one step fail (e.g. chmod a config file read-only) and check the journal names where it stopped |
 
-The first two are the same experiment and it is the obvious next step. Take a
-snapshot first; it is a live-config change and needs a `CHANGELOG.md` row.
+Cleared on turn 9 — all run for real against this desktop:
+
+- **`restore --apply --component icons`** — un-pinned a hand-pinned icon
+  theme, exposed the inherited value with no tombstone, and the live session
+  followed (the GTK bridge files were regenerated within the second). This
+  also settled `repair.unpin()`'s live behaviour; see `docs/open-questions.md`.
+- **auto-snapshot inside `apply`** — `lol-kde apply com.github.vinceliuice.Layan`,
+  snapshot line then `7/7 ok`, plasmashell survived (same pid), no memory growth.
+- **auto-snapshot inside `install`** — `lol-kde install org.magpie.nostrum.desktop`,
+  which also found a real bug (bare non-archive downloads) and took the theme
+  from 2/6 to 4/6.
 
 ## Blocked
 

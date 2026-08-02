@@ -6,6 +6,7 @@ Run with: python3 -m unittest discover -s tests
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 import sys
@@ -886,6 +887,17 @@ class TestUnpin(unittest.TestCase):
         self.assertEqual(result.resolved, "Tela")
         self.assertNotIn("[$d]", (self.user / "probe").read_text())
 
+    def test_the_empty_group_header_is_left_behind_on_purpose(self):
+        # Removing the last key leaves `[Icons]` sitting there. It resolves
+        # identically to an absent group, and deleting a group is a bigger,
+        # less reversible operation than deleting a key -- restore's unit is
+        # the key. Pinned as intended behaviour so nobody "tidies" it later.
+        self._write("[Icons]\nTheme=Breeze\n")
+        repair.unpin("probe", "Icons", "Theme", notify=False)
+        text = (self.user / "probe").read_text()
+        self.assertIn("[Icons]", text)
+        self.assertNotIn("Theme", text)
+
     def test_nothing_underneath_is_reported_as_stale_not_success(self):
         self._write("[Icons]\nTheme=Breeze\n", lower="[Icons]\n")
         result = repair.unpin("probe", "Icons", "Theme", notify=False)
@@ -1098,10 +1110,15 @@ class TestRestoreEndToEnd(_RestoreFixture, unittest.TestCase):
 
     def setUp(self):
         super().setUp()
-        self.restores = Path(self.tmp.name) / "restores"
-        self._real_store = restore.store
-        restore.store = lambda: self.restores
-        self.addCleanup(lambda: setattr(restore, "store", self._real_store))
+        # Patch snapshot.store, not restore.store. Everything under
+        # ~/.lol-kde hangs off it -- restores/ *and* journal.jsonl -- and
+        # patching only the narrower one let these tests append four entries
+        # to the real journal, where `lol-kde history` duly reported them as
+        # things that had happened to this machine. They had not.
+        fake = Path(self.tmp.name) / "lol-kde"
+        real = snapshot.store
+        snapshot.store = lambda: fake
+        self.addCleanup(lambda: setattr(snapshot, "store", real))
 
     def _run(self, components=("icons",)):
         plan = restore.build(self.snap, list(components))
@@ -1156,6 +1173,16 @@ class TestRestoreEndToEnd(_RestoreFixture, unittest.TestCase):
         kept = outcome.directory / "removed" / "kdeglobals"
         self.assertTrue(kept.is_file())
         self.assertIn("Theme=Breeze", kept.read_text())
+
+    def test_nothing_is_written_to_the_real_lol_kde_directory(self):
+        # The guard for the bug above: if snapshot.store() is ever consulted
+        # unpatched, this test starts touching the user's real journal.
+        self._make("[Icons]\nTheme=Papirus\n", "[Icons]\nTheme=Tela\n",
+                   "[Icons]\nTheme=Breeze\n", "[Icons]\nTheme=Tela\n")
+        self._run()
+        self.assertTrue(str(snapshot.store()).startswith(self.tmp.name))
+        self.assertTrue(journal.path().is_file())
+        self.assertTrue(str(journal.path()).startswith(self.tmp.name))
 
     def test_the_journal_records_each_step_before_and_after(self):
         self._make("[Icons]\nTheme=Papirus\n", "[Icons]\nTheme=Tela\n",
@@ -1357,6 +1384,89 @@ class TestMultiPackageArchives(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = self._tree(tmp, ["contents"], ["metadata.json"])
             self.assertIsNone(install._payloads(root))
+
+
+class TestBareFileDownloads(unittest.TestCase):
+    """Not every store download is an archive.
+
+    Found live on 2026-08-02: installing Nostrum's dependencies, four of five
+    succeeded and the colour scheme failed with "unrecognised archive format:
+    Nostrum.colors" -- because the store serves that entry as a bare .colors
+    file while the colorschemes knsrc expects a container.
+    """
+
+    class _Route:
+        uses_kpackage = False
+        kpackage_type = ""
+        needs_root = False
+        known = True
+        uncompress = "always"
+
+        def __init__(self, target):
+            self.target = target
+
+    def test_a_bare_file_is_recognised_as_not_an_archive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plain = Path(tmp) / "Nostrum.colors"
+            plain.write_text("[ColorEffects:Disabled]\nColorAmount=0\n")
+            self.assertFalse(install.is_archive(plain))
+
+    def test_a_bare_file_is_installed_as_itself(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plain = Path(tmp) / "Nostrum.colors"
+            plain.write_text("[General]\nName=Nostrum\n")
+            target = Path(tmp) / "color-schemes"
+            status, detail, destination = install.place_archive(
+                plain, self._Route(target), "Nostrum", force=False)
+        self.assertEqual(status, "installed")
+        self.assertEqual(destination.name, "Nostrum.colors")
+        self.assertIn("not an archive", detail)
+
+    def test_a_real_archive_still_takes_the_extract_path(self):
+        import tarfile as _tar
+        with tempfile.TemporaryDirectory() as tmp:
+            inner = Path(tmp) / "Theme"
+            inner.mkdir()
+            (inner / "index.theme").write_text("[Icon Theme]\nName=Theme\n")
+            archive = Path(tmp) / "theme.tar"
+            with _tar.open(archive, "w") as handle:
+                handle.add(inner, arcname="Theme")
+            self.assertTrue(install.is_archive(archive))
+            target = Path(tmp) / "icons"
+            status, _, destination = install.place_archive(
+                archive, self._Route(target), "Theme", force=False)
+        self.assertEqual(status, "installed")
+        self.assertTrue(destination.name)
+
+    def test_both_install_paths_place_files_through_the_same_function(self):
+        # The bug was not the missing bare-file branch -- it was that there
+        # were two copies of the placement logic and only one got fixed.
+        # `install <theme>` (manifest-driven) and `please <url>` (store-page
+        # driven) must share place_archive, or the next fix diverges too.
+        source = inspect.getsource(install.install_dependency)
+        self.assertIn("place_archive(", source)
+        for duplicated in ("_safe_extract(", "_install_tree(", "shutil.copy2("):
+            self.assertNotIn(duplicated, source,
+                             f"install_dependency has its own copy of {duplicated}")
+
+    def test_a_knsrc_spec_exposes_what_place_archive_needs(self):
+        # The delegation above only holds if a knsrc spec is route-shaped.
+        spec = knsrc.load("colorschemes")
+        for attribute in ("target", "uncompress", "uses_kpackage",
+                          "kpackage_type"):
+            self.assertTrue(hasattr(spec, attribute), attribute)
+
+    def test_an_existing_bare_file_is_skipped_not_clobbered(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plain = Path(tmp) / "Nostrum.colors"
+            plain.write_text("new")
+            target = Path(tmp) / "color-schemes"
+            target.mkdir()
+            (target / "Nostrum.colors").write_text("existing")
+            status, _, _ = install.place_archive(
+                plain, self._Route(target), "Nostrum", force=False)
+            self.assertEqual(status, "skipped")
+            self.assertEqual((target / "Nostrum.colors").read_text(), "existing")
 
 
 class TestDownloadVariants(unittest.TestCase):

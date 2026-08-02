@@ -12,6 +12,82 @@ Wolfram. Turn 1 is the first message after the context compaction on
 
 ---
 
+## Turn 9 — every critical path run for real
+
+Wolfram idled the machine deliberately so the destructive paths could be
+exercised. Memory was sampled before and after every live action; nothing
+grew.
+
+### machine
+
+| what | change | revert |
+|---|---|---|
+| `kdeglobals [Icons] Theme` | pinned to `Fluent-dark`, then un-pinned by `lol-kde restore --apply` back to the inherited `Tela` | already reverted. Backup `~/.config/kdeglobals.lolkde-turn9.bak`; `lol-kde restore 2026-08-02T17-03-04Z-f593 --apply --yes` |
+| `kwinrc [org.kde.kdecoration2] library` | `plasma-apply-lookandfeel` **deleted** the `org.kde.kwin.aurorae.v2` pin; `lol-kde apply` put it back | already reverted; group byte-identical to `~/.config/kwinrc.lolkde-turn9.bak` |
+| global theme | `lol-kde apply com.github.vinceliuice.Layan` run twice (already the applied theme) | none needed; `7/7 ok` both times, plasmashell survived |
+| installed packages | `lol-kde install org.magpie.nostrum.desktop` added Nostrum's aurorae theme, Plasma style, wallpaper and colour scheme under `~/.local/share` | `rm -rf ~/.local/share/{aurorae/themes/nostrum,plasma/desktoptheme/nostrum,wallpapers/Nostrum,color-schemes/Nostrum.colors}` |
+| removed package | `lol-kde legacy --remove` deleted the `Gently` Plasma style (5.0 MB, legacy `metadata.desktop`, unused) | re-download from the KDE Store; snapshots do not carry theme assets |
+
+Snapshots taken: `…-66f1` (turn 9 baseline) plus five automatic ones from
+`install`, `apply`, `restore` and `legacy --remove`.
+
+Only one of the three removable legacy styles was deleted, at Wolfram's
+instruction. The other two were moved out of the scan path so the tool's own
+code path — scan, snapshot, prompt, `rmtree` — ran against exactly one
+package, then moved back.
+
+### Findings
+
+**`plasma-apply-lookandfeel` deletes user-layer pins.** The big one. A
+deliberate `library=org.kde.kwin.aurorae.v2` pin was *removed from
+`~/.config/kwinrc`* by applying the look-and-feel, and resolution fell back to
+the dead plugin name. `BorderSize`, in the same group but not declared by the
+package, survived. So the repair inside `apply` is needed on every apply, and
+restore's "kdedefaults first, user layer second" ordering is not a nicety —
+reversed, it erases exactly the set restore just wrote. Recorded in
+`CLAUDE.md` and `restore-design.md` §3.5.
+
+It also un-pins *without* a tombstone, which is `KConfigGroup::revertToDefault()`
+— the C++ API that `repair.unpin()`'s two-step emulates from outside.
+
+**`unpin()` verified on the live desktop**, settling turn 8's open question.
+After the restore, all four GTK bridge files (`gtk-3.0`, `gtk-4.0`,
+`xsettingsd`, `.gtkrc-2.0`) were regenerated within the same second, every one
+reading `Tela`. Those are written by kde-gtk-config in response to KConfig's
+notification, so they are a live witness that a receiver got step 1's signal.
+No tombstone was written. `diff` independently reported `no longer pinned in
+this layer`.
+
+**`please`'s dry run under-reports.** Aimed at Layan's Global Theme page it
+lists 4 components (5 at `--depth 2`) — the description's links. The
+manifest's 7 are fetched only *after* the root package installs, so
+`--dry-run` structurally cannot see them. The real run is complete; the plan
+is a floor, not a forecast. Logged in `docs/open-questions.md`.
+
+### repo
+
+- **Bare non-archive downloads.** `install org.magpie.nostrum.desktop` failed
+  on `unrecognised archive format: Nostrum.colors` — the store serves that
+  colour scheme as a bare file while the knsrc expects a container. The bytes
+  now win over the category's expectation.
+- **The root cause was a duplicate.** `install_dependency()` carried its own
+  copy of `place_archive()`'s logic, so the first fix landed in one path only
+  and `install` kept failing while `please` worked. The copy is gone;
+  a test asserts it cannot come back. Nostrum went 2/6 → 4/6.
+- **Unit tests were writing to the real journal.** They patched
+  `restore.store` but not `snapshot.store`, which is where `journal.path()`
+  derives from, so `lol-kde history` reported 27 test runs as things that had
+  happened to this machine. Fixed, guarded by a test, and the entries removed.
+- `legacy` said "the 1 removable ones".
+- Known residue documented: `unpin()` leaves an empty `[Group]` header. It
+  resolves identically and restore's unit is the key, not the group.
+- 142 → 149 tests.
+
+**Store defect, not ours:** content `1918450` (Stone's wallpaper) returns
+`status 999: unknown request` on every attempt.
+
+---
+
 ## Turn 8 — the three open questions, and a lost session
 
 ### machine

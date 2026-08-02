@@ -42,13 +42,28 @@ A fossil in the manifest is harmless but misleading; a missing live path is not.
 
 ---
 
-## Opened by turn 8
+## Opened by turn 8, settled by turn 9
 
-| claim | why it is not settled | settles it |
+**`repair.unpin()`'s two-step works on a live desktop.** Run for real on turn 9:
+`kdeglobals [Icons] Theme` was pinned to `Fluent-dark`, then
+`lol-kde restore <id> --apply --component icons` un-pinned it. Result: the
+line was removed (no `[$d]` anywhere in the file), `kreadconfig6` returned the
+inherited `Tela`, and — the part that was actually in doubt — **the running
+session followed**. `~/.config/gtk-3.0/settings.ini`, `gtk-4.0/settings.ini`,
+`xsettingsd/xsettingsd.conf` and `~/.gtkrc-2.0` were all regenerated within
+the same second, every one of them reading `Tela`.
+
+Those four files are written by kde-gtk-config inside kded6 in response to
+KConfig's change notification, which makes them a **live witness that a
+receiver got step 1's signal and acted on it**. Step 2 changed no resolved
+value and needed no announcement. `diff` independently reported
+`no longer pinned in this layer` and caught `dconf/user` changing too.
+
+| still open | why | settles it |
 |---|---|---|
-| `repair.unpin()`'s two-step works **on a live desktop** | unit-tested against a temporary config tree only, and deliberately bus-silent there. The live claim — that step 1's `--notify` leaves running clients holding the inherited value, so step 2's raw removal needs no announcement — has not been observed on a real session | pin `kdeglobals [Icons] Theme` to a *different* icon theme, confirm the desktop changes, `unpin()`, and watch whether icons return to `Tela` without a restart. Snapshot first; this is the mechanism `restore` is built on |
-| the notification is unnecessary at step 2 because no resolved value changes | reasoning from KConfig's merge behaviour (question A), not from observation | same test as above |
 | a `[$d]` tombstone in `kdedefaults` behaves the same as one in `~/.config` | only the user layer was tested | plant one in the `kdedefaults` copy of a throwaway file and read the cascade |
+| `please <url>`'s **plan** under-reports what a real run installs | the dry run lists only what the *description* names; the manifest is consulted after the root package is installed, so `--dry-run` cannot see it. For Layan: plan says 4–5 components, a real run also fetches colorschemes, plasma-themes, aurorae, sddmtheme and xcursor | make the dry run fetch the root's `metadata.json` (or read an installed copy) and show the union. Until then the plan is a floor, not a forecast |
+| store content `1918450` (Stone's wallpaper) returns `status 999: unknown request` | observed turn 9 on every attempt; other ids on the same host work | try again later — if it persists the entry is gone and Stone's manifest is stale |
 
 Not open questions, but carried here so they are not lost — both are outside
 this repo and were surfaced by the incident postmortem:

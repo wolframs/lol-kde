@@ -185,6 +185,26 @@ missing from every snapshot and diff taken before turn 8. Fixed with
 as a deletion of `Key` rather than as a key named `Key[$d]`. Locale variants
 (`Name[de_DE]`) carry no `$` and must survive intact.
 
+**`plasma-apply-lookandfeel` deletes your user-layer pins for every key the
+theme declares.** Measured on turn 9, directly: `~/.config/kwinrc` held
+`[org.kde.kdecoration2] library=org.kde.kwin.aurorae.v2` as a deliberate pin.
+Running `plasma-apply-lookandfeel --apply com.github.vinceliuice.Layan`
+**removed that line**, and `library` fell back to the dead
+`org.kde.kwin.aurorae` from `kdedefaults`. `BorderSize=Normal`, in the same
+group, survived — because the look-and-feel package does not declare it.
+
+Three consequences, all load-bearing:
+
+- The repair inside `lol-kde apply` is not a one-time turn-2 fix. It runs and
+  is needed on **every** apply, because every apply undoes it.
+- Restore's ordering rule (`kdedefaults` first, user layer second) is not a
+  nicety. Reversed, it silently destroys every pin restore just wrote.
+- **KDE itself un-pins without leaving a tombstone.** `kwriteconfig6 --delete`
+  writes `Key[$d]`; this removes the line. The C++ route is almost certainly
+  `KConfigGroup::revertToDefault()`, which is the API `repair.unpin()`'s
+  two-step emulates from outside. A small compiled helper could call it
+  directly — noted as an option, not a need; the two-step is verified working.
+
 **Colour scheme filenames are not identifiers.** `Sweet-Ambar-Blue` lives in
 `SweetAmbarBlue.colors`. Match on the internal `Name=` field.
 

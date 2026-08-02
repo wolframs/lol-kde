@@ -29,6 +29,18 @@ class InstallResult:
     destination: Path | None = None
 
 
+def is_archive(path: Path) -> bool:
+    """Is this actually a container, or just a file someone uploaded?
+
+    The knsrc's `uncompress=` setting says what a category *usually* ships,
+    and store entries disagree with it in practice: Nostrum's colour scheme
+    downloads as a bare `Nostrum.colors`, and the installer refused it with
+    "unrecognised archive format" while every other dependency succeeded.
+    The bytes on disk are the authority, not the category's expectation.
+    """
+    return zipfile.is_zipfile(path) or tarfile.is_tarfile(path)
+
+
 def _safe_extract(archive: Path, into: Path) -> Path:
     """Unpack an archive, refusing entries that escape the destination."""
     into.mkdir(parents=True, exist_ok=True)
@@ -137,13 +149,18 @@ def place_archive(archive: Path, route, name: str, force: bool) -> tuple[str, st
     if route.target is None:
         return "failed", "no install target for this content type", None
 
-    if route.uncompress == "never":
+    # Either the category says these arrive uncompressed, or this particular
+    # download simply is not an archive whatever the category claims.
+    bare = not is_archive(archive)
+    if route.uncompress == "never" or bare:
         route.target.mkdir(parents=True, exist_ok=True)
         destination = route.target / archive.name
         if destination.exists() and not force:
             return "skipped", f"already present at {destination}", destination
         shutil.copy2(archive, destination)
-        return "installed", "", destination
+        detail = ("" if not bare or route.uncompress == "never"
+                  else f"not an archive; installed {archive.name} as-is")
+        return "installed", detail, destination
 
     extracted = _safe_extract(archive, archive.parent / "unpacked")
     try:
@@ -227,34 +244,15 @@ def install_dependency(
         except store.StoreError as exc:
             return InstallResult(dependency, item, "failed", str(exc))
 
+        # Delegate rather than repeat. This block used to be its own copy of
+        # place_archive, and the copies drifted: a fix for a bare (non-archive)
+        # download landed in one path only, so `install <theme>` went on
+        # failing with "unrecognised archive format" while `please <url>`
+        # worked. A knsrc spec exposes the same target/uncompress/kpackage
+        # attributes a store route does, so one function can serve both.
         try:
-            if spec.uses_kpackage:
-                detail = _kpackage_install(archive, spec.kpackage_type, force)
-                return InstallResult(dependency, item, "installed", detail)
-
-            if spec.uncompress == "never":
-                assert spec.target is not None
-                spec.target.mkdir(parents=True, exist_ok=True)
-                destination = spec.target / archive.name
-                if destination.exists() and not force:
-                    return InstallResult(
-                        dependency, item, "skipped", f"already present at {destination}"
-                    )
-                shutil.copy2(archive, destination)
-                return InstallResult(dependency, item, "installed", "", destination)
-
-            extracted = _safe_extract(archive, tmpdir / "unpacked")
-            assert spec.target is not None
-            destinations = _install_tree(extracted, spec.target, item.name, force)
-            detail = ("" if len(destinations) == 1
-                      else f"{len(destinations)} packages: "
-                           + ", ".join(d.name for d in destinations))
-            return InstallResult(dependency, item, "installed", detail, destinations[0])
-
-        except FileExistsError as exc:
-            return InstallResult(
-                dependency, item, "skipped",
-                f"already installed at {exc.args[0]} (use --force to replace)",
-            )
+            status, detail, destination = place_archive(
+                archive, spec, item.name, force)
+            return InstallResult(dependency, item, status, detail, destination)
         except (OSError, ValueError, RuntimeError) as exc:
             return InstallResult(dependency, item, "failed", str(exc))

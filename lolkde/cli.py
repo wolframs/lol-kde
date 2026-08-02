@@ -179,8 +179,11 @@ def cmd_legacy(args: argparse.Namespace) -> int:
 
     if not args.remove:
         if removable:
-            print(f"\nTo delete the {len(removable)} removable ones: "
-                  f"lol-kde legacy --remove")
+            # "the 1 removable ones" -- seen on turn 9, once the count could
+            # actually be one. The rest of this program spells its counts.
+            what = ("it" if len(removable) == 1
+                    else f"the {len(removable)} removable ones")
+            print(f"\nTo delete {what}: lol-kde legacy --remove")
         return 0
 
     if not removable:

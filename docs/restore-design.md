@@ -138,6 +138,16 @@ everyone — requires emitting `ConfigChanged` by hand, and:
 The two-step is what lets restore be correct *and* stay inside the supported
 writer. It was chosen for safety and turns out to be simpler.
 
+### Known residue: the group header stays
+
+Removing the last key from a group leaves the empty `[Group]` line behind.
+Deliberate, on two grounds: an empty group resolves identically to an absent
+one, and deleting a group is a larger and less reversible operation than
+deleting a key — restore is per-key by design (§2), and a group is not its
+unit. It does mean restore is not byte-exact against the snapshot, which is
+fine: it was never a byte-restore. `diff` compares parsed keys, so it reports
+the two states as equal.
+
 ### When there is nothing underneath
 
 If no lower layer defines the key, step 1 has nothing to write. The line is
@@ -231,9 +241,19 @@ files are its effects.
    state you asked for is no longer producible. Show that; do not paper over it.
 4. **If the package is not installed, refuse.** Point at `lol-kde install`.
    Never fabricate the layer.
-5. **Ordering is fixed: `kdedefaults` first, user layer second.**
-   `plasma-apply-lookandfeel` also writes `LookAndFeelPackage` into the *user*
-   layer, so applying afterwards would silently overwrite restored keys.
+5. **Ordering is fixed: `kdedefaults` first, user layer second.** Measured on
+   turn 9 and it is worse than this rule originally assumed:
+   `plasma-apply-lookandfeel` **deletes user-layer keys** for everything the
+   package declares. A deliberate `library=org.kde.kwin.aurorae.v2` pin in
+   `~/.config/kwinrc` was removed outright, and resolution fell back to the
+   dead plugin name; `BorderSize`, which the package does not declare,
+   survived untouched. Applying after the user layer does not "overwrite some
+   keys" — it erases exactly the set restore just wrote. Reversed ordering is
+   not a degradation, it is a total loss of the pins.
+
+   It also removes the line rather than tombstoning it, which is what
+   `KConfigGroup::revertToDefault()` does. §1a's two-step reproduces that
+   from outside the process; a compiled helper could call it directly.
 6. **Never pass `--resetLayout`.** It wipes the desktop layout.
 7. If the applied package is unchanged, **skip step 2 entirely**. Re-applying a
    look-and-feel is heavyweight and partially side-effecting — including a live

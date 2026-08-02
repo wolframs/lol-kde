@@ -12,6 +12,68 @@ Wolfram. Turn 1 is the first message after the context compaction on
 
 ---
 
+## Turn 11 — back to Layan, and the Plasma 5 sweep
+
+### machine
+
+| what | change | revert |
+|---|---|---|
+| global theme | `Gently-Dark-Global-6` → `com.github.vinceliuice.Layan`, `7/7 ok` | `lol-kde apply Gently-Dark-Global-6` — but Gently is now in quarantine |
+| **33 packages pruned** | 7 previous-generation global themes, 23 components only they referenced, 2 orphaned legacy Plasma styles. **80 MB** | `~/.lol-kde/pruned/2026-08-02T17-49-58Z/RESTORE.md` — everything was *moved*, nothing deleted |
+
+Removed themes: `Ant-Dark`, `Gently-Dark-Global-6`, `Stone`, `Sweet`,
+`Sweet-Ambar-Blue`, `Sweet-Mars`, `com.github.yeyushengfan258.WinSur-dark`.
+
+`lol-kde legacy` now reports **"No packages using legacy metadata.desktop"**
+for the first time. Snapshot `…-4067` taken automatically before the move.
+
+Wolfram chose the conservative scope: only previous-generation themes and
+what they exclusively own. **Left alone deliberately:** ~1.6 GB of icon
+themes, Aurorae decorations and one cursor set that no installed global theme
+references — they may well be things picked by hand in System Settings, and
+"unreferenced" is not "unwanted". Also left: `Gently-Splash-6`, a splash-only
+package orphaned by Gently's removal but modern, and `org.magpie.nostrum.desktop`.
+
+The sharing rule earned its place on the first run: `Tela` is referenced by
+both `Stone` (removed) and `Layan` (applied), and was correctly held back.
+
+### repo
+
+- **`lolkde/prune.py` + `lol-kde prune`** — plan by default, `--apply` to act.
+  A component goes only if no surviving theme references it *and* it is not
+  live. Removals are **moved** to `~/.lol-kde/pruned/<ts>/`, path-preserved,
+  with a manifest and a `RESTORE.md`. Quarantining a gigabyte costs no extra
+  disk, unlike `legacy --remove`'s `rmtree`.
+- **How to tell the generations apart**, having tried and discarded two
+  plausible signals: `X-Plasma-APIVersion` is absent from current store
+  entries (`Gently-Dark-Global-6` does not set it, Layan does), and install
+  dates are worthless because these came across in a bulk copy that reset
+  every mtime. What works is the **Plasma style** a theme points at: no
+  `metadata.json` means pre-5.19, which dates the theme that ships it.
+- The bulk undo snippet in `RESTORE.md` shipped once as a shell loop whose
+  body was `:` — it looked like a restore and did nothing. Now a real script,
+  idempotent, and a test runs it for real and checks the files come back.
+- 160 → 170 tests.
+
+### not done
+
+The titlebar-icon antialiasing Wolfram asked about first. Diagnosed but not
+fixed, because he decided Gently was not worth the effort. The finding, kept
+because it generalises: it is **not** an antialiasing setting — AA is working,
+125 distinct edge levels in the screenshot. `ButtonWidth=22` at display scale
+1.25 lands on **27.5 device pixels**, and measuring with `QSvgRenderer` (the
+engine Aurorae v2 actually uses) showed that size is a trough for two of the
+three glyphs: ~43% of touched pixels fully covered, against ~58% at 35 device
+px. Measured button pitch was 37 then 40 device px for evenly-spaced buttons,
+which is the same fractional layout showing up directly.
+
+**A correction worth keeping:** the first reading was that crispness peaks at
+integer multiples of the artwork's natural 26px. That holds for `minimize` and
+not for the other two — the peaks are per-glyph, set by where each glyph's
+strokes fall. The recommendation stands only on the measured average.
+
+---
+
 ## Turn 10 — Gently, and three crashes on the way to it
 
 Wolfram asked for Gently to be found on opendesktop.org, installed with

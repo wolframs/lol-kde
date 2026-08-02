@@ -20,6 +20,7 @@ from . import banner, catalog, compare, journal, snapshot
 from . import legacy
 from . import install as installer
 from . import manifest, repair, resolve
+from . import prune as pruner
 from . import restore as restorer
 from .resolve import DEGRADED, MISSING, OK
 
@@ -832,6 +833,83 @@ def _print_outcome(outcome) -> None:
             print("  " + row)
 
 
+def cmd_prune(args: argparse.Namespace) -> int:
+    plan = pruner.build(include_orphan_styles=not args.keep_orphans)
+    if not plan.remove:
+        print("Nothing to prune. No previous-generation global themes found.")
+        return 0
+
+    print(f"Applied theme: {plan.applied}  {_paint('(never removable)', '2')}")
+    print(f"Keeping {len(plan.kept_themes)}: {', '.join(plan.kept_themes)}\n")
+
+    by_kind: dict[str, list] = {}
+    for removal in plan.remove:
+        by_kind.setdefault(removal.kind, []).append(removal)
+    for kind in sorted(by_kind, key=lambda k: (k != "global-theme", k)):
+        rows = by_kind[kind]
+        total = sum(r.size for r in rows)
+        print(f"  {kind}  {_paint(f'({len(rows)}, {_bytes(total)})', '2')}")
+        for removal in sorted(rows, key=lambda r: -r.size):
+            where = str(removal.path).replace(str(pruner.paths.HOME), "~")
+            print(f"    - {removal.name:<38} {_bytes(removal.size):>8}  "
+                  f"{_paint(where, '2')}")
+
+    if plan.protected:
+        print(_paint("\n  kept back (a surviving theme still needs these):", "33"))
+        for note in sorted(set(plan.protected)):
+            print(f"    ! {note}")
+    if plan.undecided:
+        print(_paint(f"\n  no verdict for {len(plan.undecided)} theme(s) "
+                     f"(no Plasma style declared, or not installed): "
+                     f"{', '.join(plan.undecided)}", "2"))
+
+    problems = pruner.check(plan)
+    for problem in problems:
+        print("\n" + _paint("error: ", "31") + problem)
+    if problems:
+        return 2
+
+    print(f"\n  {len(plan.remove)} item(s), {_bytes(plan.bytes)} to reclaim")
+    if not args.apply:
+        print(_paint("\nNothing was moved. To do it:", "1"))
+        print("  lol-kde prune --apply")
+        return 0
+
+    if not args.yes:
+        try:
+            answer = input(f"\nMove {len(plan.remove)} item(s) to quarantine? [y/N] ")
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 130
+        if answer.strip().lower() not in ("y", "yes"):
+            print("Nothing was moved.")
+            return 0
+
+    print("\nSnapshotting first…")
+    before = snapshot.capture(reason="before prune",
+                              message="before pruning previous-generation themes")
+    print(f"  {before['id']}")
+
+    quarantine, moved, failures = pruner.run(plan)
+    print(f"\n  moved {len(moved)} item(s), {_bytes(sum(r.size for r in moved))}")
+    for failure in failures:
+        print("  " + _paint("FAILED ", "31") + failure)
+    print(_paint(f"  quarantine: {quarantine}", "2"))
+    print(_paint(f"  undo:       {quarantine}/RESTORE.md", "2"))
+    print("\nNothing was deleted. Remove the quarantine directory when you are "
+          "satisfied.")
+    return 1 if failures else 0
+
+
+def _bytes(count: int) -> str:
+    size = float(count)
+    for unit in ("B", "K", "M", "G"):
+        if size < 1024 or unit == "G":
+            return f"{size:.0f}{unit}" if unit == "B" else f"{size:.1f}{unit}"
+        size /= 1024
+    return f"{size:.1f}G"
+
+
 def cmd_history(args: argparse.Namespace) -> int:
     found = journal.entries(args.n)
     if not found:
@@ -956,6 +1034,18 @@ def build_parser() -> argparse.ArgumentParser:
     res.add_argument("--break-lock", action="store_true",
                      help="take the lock from a process that is no longer running")
     res.set_defaults(func=cmd_restore)
+
+    prn = sub.add_parser(
+        "prune", help="remove global themes built for a previous Plasma version",
+        epilog="A component is removed only if no surviving theme references it "
+               "and it is not live. Nothing is deleted -- removals are moved to "
+               "~/.lol-kde/pruned/<ts>/ with a RESTORE.md.")
+    prn.add_argument("--apply", action="store_true",
+                     help="actually move things. Without this, nothing changes")
+    prn.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    prn.add_argument("--keep-orphans", action="store_true",
+                     help="leave legacy Plasma styles that no theme references")
+    prn.set_defaults(func=cmd_prune)
 
     hist = sub.add_parser("history", help="what this tool has done to your machine")
     hist.add_argument("-n", type=int, default=20, help="how many entries (0 = all)")

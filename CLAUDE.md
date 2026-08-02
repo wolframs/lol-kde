@@ -205,6 +205,17 @@ Three consequences, all load-bearing:
   two-step emulates from outside. A small compiled helper could call it
   directly — noted as an option, not a need; the two-step is verified working.
 
+**Telling Plasma generations apart: use the Plasma style, not the manifest.**
+Two plausible signals were tried on turn 11 and both are useless.
+`X-Plasma-APIVersion` is absent from current store entries —
+`Gently-Dark-Global-6` does not set it and Layan does — so absence proves
+nothing. Install mtimes are worthless here because the old themes arrived in a
+bulk copy from the Kubuntu 24.04 system, which reset every one of them to the
+copy date. What does work: the **Plasma style** the theme points at. A style
+with `metadata.desktop` and no `metadata.json` predates Plasma 5.19, which
+dates the theme shipping it. `prune.is_previous_generation()` uses exactly
+that and returns `None` rather than guessing when a theme declares no style.
+
 **Colour scheme filenames are not identifiers.** `Sweet-Ambar-Blue` lives in
 `SweetAmbarBlue.colors`. Match on the internal `Name=` field.
 

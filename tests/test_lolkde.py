@@ -15,13 +15,14 @@ import tarfile
 import urllib.error
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lolkde import (banner, catalog, cli, compare, install, journal,  # noqa: E402
                     kconfig, knsrc, legacy, manifest, paths, repair,
-                    resolve, restore, snapshot, store)
+                    prune, resolve, restore, snapshot, store)
 
 
 class TestManifestParsing(unittest.TestCase):
@@ -1273,6 +1274,168 @@ class TestRestoreLock(unittest.TestCase):
             path.write_text("999999")
             restore.Lock(path).release()
             self.assertTrue(path.exists())
+
+
+class TestPrune(unittest.TestCase):
+    """The sharing rule is the whole feature.
+
+    Layan and Stone both point at the Tela icon theme. Removing Stone must
+    not take Tela with it, and that case is live on this machine -- which is
+    why this is a graph problem and not a list of names.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name)
+        self.data = self.home / ".local/share"
+        (self.data / "plasma/look-and-feel").mkdir(parents=True)
+        (self.data / "plasma/desktoptheme").mkdir(parents=True)
+        (self.data / "icons").mkdir(parents=True)
+        self.old_home, self.old_data = paths.HOME, os.environ.get("XDG_DATA_HOME")
+        paths.HOME = self.home
+        os.environ["XDG_DATA_HOME"] = str(self.data)
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        paths.HOME = self.old_home
+        if self.old_data is None:
+            os.environ.pop("XDG_DATA_HOME", None)
+        else:
+            os.environ["XDG_DATA_HOME"] = self.old_data
+
+    def _theme(self, name, style, icons="", modern_style=True):
+        d = self.data / "plasma/look-and-feel" / name / "contents"
+        d.mkdir(parents=True)
+        lines = [f"[plasmarc][Theme]\nname={style}\n"]
+        if icons:
+            lines.append(f"[kdeglobals][Icons]\nTheme={icons}\n")
+        (d / "defaults").write_text("\n".join(lines))
+        sd = self.data / "plasma/desktoptheme" / style
+        sd.mkdir(parents=True, exist_ok=True)
+        (sd / "metadata.desktop").write_text("[Desktop Entry]\n")
+        if modern_style:
+            (sd / "metadata.json").write_text("{}")
+        if icons:
+            (self.data / "icons" / icons).mkdir(parents=True, exist_ok=True)
+            (self.data / "icons" / icons / "index.theme").write_text("x")
+
+    def _live(self, applied):
+        return {("kdeglobals", "KDE"): {"LookAndFeelPackage": applied}}
+
+    def test_a_legacy_style_marks_its_theme_as_previous_generation(self):
+        self._theme("Old", "OldStyle", modern_style=False)
+        self._theme("New", "NewStyle", modern_style=True)
+        lnf = self.data / "plasma/look-and-feel"
+        self.assertTrue(prune.is_previous_generation(lnf / "Old"))
+        self.assertFalse(prune.is_previous_generation(lnf / "New"))
+
+    def test_a_shared_component_is_protected_from_removal(self):
+        self._theme("Old", "OldStyle", icons="Shared", modern_style=False)
+        self._theme("New", "NewStyle", icons="Shared", modern_style=True)
+        with unittest.mock.patch.object(resolve, "live_settings",
+                                        return_value=self._live("New")):
+            plan = prune.build()
+        removed = {r.name for r in plan.remove}
+        self.assertIn("Old", removed)
+        self.assertNotIn("Shared", removed)
+        self.assertTrue(plan.protected)
+
+    def test_an_exclusive_component_is_removed(self):
+        self._theme("Old", "OldStyle", icons="OnlyOld", modern_style=False)
+        self._theme("New", "NewStyle", icons="OnlyNew", modern_style=True)
+        with unittest.mock.patch.object(resolve, "live_settings",
+                                        return_value=self._live("New")):
+            plan = prune.build()
+        removed = {r.name for r in plan.remove}
+        self.assertIn("OnlyOld", removed)
+        self.assertNotIn("OnlyNew", removed)
+
+    def test_the_applied_theme_is_never_removed_even_if_legacy(self):
+        self._theme("Old", "OldStyle", icons="OldIcons", modern_style=False)
+        with unittest.mock.patch.object(resolve, "live_settings",
+                                        return_value=self._live("Old")):
+            plan = prune.build()
+        self.assertEqual([r.name for r in plan.remove], [])
+        self.assertIn("Old", plan.kept_themes)
+
+    def test_a_live_component_is_protected_even_with_no_theme_claiming_it(self):
+        self._theme("Old", "OldStyle", icons="LiveIcons", modern_style=False)
+        self._theme("New", "NewStyle", modern_style=True)
+        live = self._live("New")
+        live[("kdeglobals", "Icons")] = {"Theme": "LiveIcons"}
+        with unittest.mock.patch.object(resolve, "live_settings",
+                                        return_value=live):
+            plan = prune.build()
+        self.assertNotIn("LiveIcons", {r.name for r in plan.remove})
+
+    def test_check_refuses_paths_outside_the_users_theme_directories(self):
+        plan = prune.Plan(remove=[prune.Removal("icons", "evil", Path("/usr/share/icons/breeze"), "x")])
+        self.assertTrue(any("outside" in p for p in prune.check(plan)))
+
+    def test_check_refuses_a_symlink(self):
+        target = self.data / "icons" / "real"
+        target.mkdir(parents=True)
+        link = self.data / "icons" / "link"
+        link.symlink_to(target)
+        plan = prune.Plan(remove=[prune.Removal("icons", "link", link, "x")])
+        self.assertTrue(any("symlink" in p for p in prune.check(plan)))
+
+    def test_removals_are_moved_not_deleted(self):
+        self._theme("Old", "OldStyle", icons="OldIcons", modern_style=False)
+        self._theme("New", "NewStyle", modern_style=True)
+        store = self.home / ".lol-kde"
+        with unittest.mock.patch.object(resolve, "live_settings",
+                                        return_value=self._live("New")), \
+             unittest.mock.patch.object(snapshot, "store", return_value=store):
+            plan = prune.build()
+            quarantine, moved, failures = prune.run(plan)
+        self.assertEqual(failures, [])
+        self.assertTrue(moved)
+        # Gone from where it was...
+        self.assertFalse((self.data / "icons" / "OldIcons").exists())
+        # ...and present in quarantine, path-preserved, with a way back.
+        kept = quarantine / ".local/share/icons/OldIcons"
+        self.assertTrue(kept.is_dir())
+        self.assertTrue((quarantine / "manifest.json").is_file())
+        self.assertIn("mv ", (quarantine / "RESTORE.md").read_text())
+
+    def test_the_bulk_undo_snippet_actually_restores(self):
+        # It shipped once as a shell loop whose body was `:`. This runs the
+        # documented snippet for real and checks the files come back.
+        self._theme("Old", "OldStyle", icons="OldIcons", modern_style=False)
+        self._theme("New", "NewStyle", modern_style=True)
+        store = self.home / ".lol-kde"
+        with unittest.mock.patch.object(resolve, "live_settings",
+                                        return_value=self._live("New")), \
+             unittest.mock.patch.object(snapshot, "store", return_value=store):
+            plan = prune.build()
+            quarantine, moved, _ = prune.run(plan)
+
+        note = (quarantine / "RESTORE.md").read_text()
+        self.assertNotIn("  :  #", note)             # the old no-op body
+        body = note.split("```sh", 1)[1].split("```", 1)[0]
+        script = body.split("<<'PY'", 1)[1].rsplit("PY", 1)[0]
+        import subprocess
+        done = subprocess.run([sys.executable, "-c", script], cwd=quarantine,
+                              capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertTrue((self.data / "icons" / "OldIcons").is_dir())
+        self.assertTrue((self.data / "plasma/look-and-feel/Old").is_dir())
+        # And it is safe to run twice.
+        again = subprocess.run([sys.executable, "-c", script], cwd=quarantine,
+                               capture_output=True, text=True)
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertIn("skipped", again.stdout)
+
+    def test_the_colour_scheme_filename_is_not_its_identifier(self):
+        # Sweet-Ambar-Blue lives in SweetAmbarBlue.colors; matching on the
+        # filename alone would miss it and leave the file behind.
+        base = self.data / "color-schemes"
+        base.mkdir(parents=True)
+        (base / "SweetAmbarBlue.colors").write_text("[General]\nName=Sweet-Ambar-Blue\n")
+        found = prune.locate("colour-scheme", "Sweet-Ambar-Blue")
+        self.assertIn(base / "SweetAmbarBlue.colors", found)
 
 
 class TestThemeLookup(unittest.TestCase):

@@ -15,6 +15,7 @@ memory. If you defer something, it goes here.
 | Capture system state | `snapshot`, `snapshots` | with coverage probes — see below |
 | Compare two states | `diff` | key-level and semantic |
 | Put a snapshot back | `restore` | plan by default, `--apply` to write. See caveat below |
+| Remove previous-generation themes | `prune` | plan by default; removals are moved to quarantine, never deleted |
 
 ## Deferred — designed, not built
 

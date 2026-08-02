@@ -219,6 +219,31 @@ def plasma_style(name: str) -> Resolution:
     return r
 
 
+AURORAE_LEGACY_PLUGIN = "org.kde.kwin.aurorae"
+AURORAE_SVG_PLUGIN = "org.kde.kwin.aurorae.v2"
+
+
+def aurorae_provider() -> str:
+    """The decoration plugin that actually offers Aurorae SVG themes here.
+
+    Plasma 6.6 split Aurorae in two. 'org.kde.kwin.aurorae' is now only the QML
+    renderer and offers exactly one theme -- Plastik. Every SVG theme moved to
+    the native 'org.kde.kwin.aurorae.v2'.
+
+    KWin still loads an SVG theme under the old plugin name, so nothing appears
+    broken. But the Window Decorations page matches its list on the pair
+    (plugin, theme), finds no row where plugin is the old name, and therefore
+    shows *nothing selected* -- with your decoration visibly on screen behind
+    the dialog. Every Aurorae theme published to the KDE Store still writes the
+    old name, so this hits essentially all of them.
+    """
+    for plugin_dir in paths.qt_plugin_dirs():
+        for api in ("org.kde.kdecoration3", "org.kde.kdecoration2"):
+            if (plugin_dir / api / f"{AURORAE_SVG_PLUGIN}.so").is_file():
+                return AURORAE_SVG_PLUGIN
+    return AURORAE_LEGACY_PLUGIN
+
+
 def decoration(library: str, theme: str) -> Resolution:
     """Window decoration. The titlebar and borders, and nothing else."""
     value = theme or library
@@ -230,13 +255,23 @@ def decoration(library: str, theme: str) -> Resolution:
     if theme.startswith(AURORAE_PREFIX):
         aurorae_name = theme[len(AURORAE_PREFIX):]
         hit = _search("aurorae/themes", aurorae_name)
-        if hit:
-            r.status, r.path = OK, hit
-            if not (hit / "decoration.svg").is_file():
-                r.status = DEGRADED
-                r.detail = "theme directory exists but has no decoration.svg"
-        else:
-            r.detail = f"Aurorae theme {aurorae_name!r} not installed; falls back to Breeze"
+        if not hit:
+            r.detail = (f"Aurorae theme {aurorae_name!r} not installed; "
+                        "falls back to Breeze")
+            return r
+        r.status, r.path = OK, hit
+        if not (hit / "decoration.svg").is_file():
+            r.status = DEGRADED
+            r.detail = "theme directory exists but has no decoration.svg"
+            return r
+        provider = aurorae_provider()
+        if library and library != provider:
+            r.status = DEGRADED
+            r.detail = (
+                f"library={library}, but this Plasma serves Aurorae SVG themes "
+                f"from {provider}. KWin loads the theme anyway, so it looks "
+                f"right; System Settings shows no decoration selected. "
+                f"'lol-kde apply' rewrites it.")
         return r
 
     for plugin_dir in paths.qt_plugin_dirs():

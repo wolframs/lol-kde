@@ -175,6 +175,25 @@ the single most common cause of "I applied the theme and nothing happened".
 Kvantum themes are usually distributed on GitHub, not the KDE Store, so `install`
 cannot fetch them.
 
+**Plasma 6.6 split Aurorae in two, and every theme in the store still names the
+half that no longer has any themes in it.** `org.kde.kwin.aurorae` is now only
+the QML renderer, offering exactly one theme -- Plastik. Every SVG theme moved
+to `org.kde.kwin.aurorae.v2`.
+
+KWin still *loads* your theme under the old name, so your desktop looks
+correct. But System Settings matches its list on the pair (plugin, theme),
+finds no such row, and shows **nothing selected at all** -- which looks
+precisely like "window decorations are broken on this machine".
+
+```
+  warn   Window decoration  Layan
+         library=org.kde.kwin.aurorae, but this Plasma serves Aurorae SVG
+         themes from org.kde.kwin.aurorae.v2. KWin loads the theme anyway, so
+         it looks right; System Settings shows no decoration selected.
+```
+
+`lol-kde apply` rewrites it and asks KWin to reload. No logout, no flicker.
+
 **Colour scheme filenames are not identifiers.** `Sweet-Ambar-Blue` lives in
 `SweetAmbarBlue.colors`. Matching on filename produces false negatives; `lol-kde`
 matches on the internal `Name=` field, as KDE does.

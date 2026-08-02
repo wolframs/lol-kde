@@ -58,12 +58,39 @@ a failed write.
 Checking only `~/.local/share/icons` produces false negatives.
 
 **KWin 6.6 loads KDecoration3 plugins but reads the `org.kde.kdecoration2`
-config group.** The Window Decorations KCM may show *nothing selected* while
-KWin has the decoration correctly loaded. Ask KWin, never the KCM:
+config group.** Both are true at once. Do not "correct" the group name.
+Ask KWin, never the KCM:
 
 ```sh
 qdbus6 org.kde.KWin /KWin org.kde.KWin.supportInformation | grep -A4 '^Decoration'
 ```
+
+**Plasma 6.6 split Aurorae into two plugins, and every theme in the store
+still names the dead one.** `org.kde.kwin.aurorae` is now only the QML
+renderer and offers exactly *one* theme — Plastik. All SVG themes moved to
+the native `org.kde.kwin.aurorae.v2`. Measured here: 29 themes under `.v2`,
+1 under the old id.
+
+KWin still *loads* an SVG theme under the old plugin name, so the desktop
+looks entirely correct. But the Window Decorations page matches its list on
+the pair `(plugin, theme)`, finds no row with the old plugin, and shows
+**nothing selected** — which reads as "window decorations are broken" and is
+not. 11 of the 12 global themes installed on this machine ship the old name.
+
+`resolve.aurorae_provider()` detects which plugin serves SVG themes by
+looking for `org.kde.kwin.aurorae.v2.so`; `repair.aurorae_plugin()` rewrites
+`library` and calls `KWin.reconfigure`. No logout needed, no flicker.
+
+**To see what the decoration KCM actually contains, ask the plugins.** This
+is ~30 lines of C++ against the shipped public header
+`/usr/include/KDecoration3/kdecoration3/decorationthemeprovider.h`, mirroring
+KWin's `DecorationsModel::init()`: `KPluginMetaData::findPlugins("org.kde.kdecoration3")`,
+then `KPluginFactory::instantiatePlugin<KDecoration3::DecorationThemeProvider>`
+on each, then dump `themes()`. Build with
+`g++ $(pkg-config --cflags --libs Qt6Core) -I/usr/include/KF6/KCoreAddons
+-I/usr/include/KDecoration3 -lKF6CoreAddons -lkdecorations3`. Plugins that
+fail to instantiate (breeze, oxygen, darkly) are normal — they have no theme
+list and the model adds them as themselves.
 
 ## Kvantum (source of most confusion)
 
@@ -116,21 +143,46 @@ flag those as legacy.
 - Applied: `com.github.vinceliuice.Layan`, `7/7 ok`
 - Kvantum: theme `Layan`, `reduce_window_opacity=15` (backup `.bak` has `0`)
 - Window translucency: **working**, confirmed visually
+- Decoration: `org.kde.kwin.aurorae.v2` / `__aurorae__svg__Layan`, written into
+  the `~/.config` user layer (backup: `~/.config/kwinrc.lolkde.bak`)
 - Compositor: `gl2`, NVIDIA, Wayland. Blur loaded; `contrast` refuses to load.
 - Xwayland scale 1.2 (fractional — expect soft edges on SVG decorations)
 
+## Measuring SVG themes: use QSvgRenderer, nothing else
+
+`librsvg`/`rsvg-convert` disagrees with Qt on real theme files, and an alpha
+table produced with it was withdrawn as unreliable. Aurorae v2 renders with
+**QSvgRenderer**, so measure with QSvgRenderer. `pkg-config Qt6Svg` is enough;
+no PyQt needed. Render `boundsOnElement(id)` into an `ARGB32_Premultiplied`
+image at 8× and report mean alpha, covered %, fully-opaque %.
+
+Numbers for Layan, from that method — these are trustworthy:
+
+| element | mean alpha | covered | fully opaque |
+|---|---|---|---|
+| `decoration-center` | 203/255 (≈80%) | 100% | 0% |
+| `decoration-top` | 98 | 82.6% | 0% |
+| `mask-center` | 255 | 100% | **100%** |
+
+So Layan's titlebar is designed ~20% see-through with the *entire* titlebar
+area declared a blur region. Nothing in the artwork is fully opaque anywhere.
+
+**`#g1000` is noise, not a broken button.** `maximize.svg` and `restore.svg`
+carry a stray top-level `<use id="use1002" href="#g1000">` where `g1000` was
+never defined, so Qt logs `link #g1000 is undefined!` on every parse. Aurorae
+renders buttons by state id, and all five states — `active-center`,
+`inactive-center`, `hover-center`, `pressed-center`, `deactivated-center` —
+measure ~80% covered with real artwork. Cosmetic log spam only. Deleting the
+one `<use>` line silences it; upstream is `github.com/vinceliuice/Layan-kde`.
+
 ## Open leads
 
-1. **Window decorations** — the next task. KWin has `org.kde.kwin.aurorae` /
-   `__aurorae__svg__Layan` loaded and `alphaChannelSupported: true`, but the
-   Window Decorations KCM shows nothing selected. Suspect a KDecoration2/3
-   config-group mismatch in the KCM. Decoration *translucency* was never
-   settled — the alpha table produced earlier was withdrawn as unreliable and
-   must not be trusted. Settling it needs `python3-pyqt6.qtsvg` (QSvgRenderer),
-   the engine KSvg actually uses.
-2. **Layan button bug** — `maximize.svg` and `restore.svg` contain
-   `<use href="#g1000">` where `g1000` is never defined. Qt logs
-   `link #g1000 is undefined!` on every repaint. Upstream:
-   `github.com/vinceliuice/Layan-kde`. Local patch not yet applied.
-3. **`contrast` effect** won't load despite `contrastEnabled=true` and a KWin
+1. **`contrast` effect** won't load despite `contrastEnabled=true` and a KWin
    reconfigure. Affects panel frostiness only.
+2. **`BorderSize` drift.** Layan declares `None`; `~/.config/kwinrc` carries
+   `Normal` in the user layer and wins. `audit()` does not compare BorderSize
+   at all — it is in the same group as `library`/`theme` and would be a cheap
+   addition.
+3. The KCM's own previews log `qt.svg: Could not resolve property:
+   #linearGradient…` — that is one of the other 28 installed themes, not
+   Layan, whose `decoration.svg` has no dangling references. Unidentified.

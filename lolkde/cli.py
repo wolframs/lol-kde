@@ -17,7 +17,7 @@ from pathlib import Path
 from . import banner, catalog
 from . import legacy
 from . import install as installer
-from . import manifest, resolve
+from . import manifest, repair, resolve
 from .resolve import DEGRADED, MISSING, OK
 
 _COLOR = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
@@ -438,6 +438,13 @@ def cmd_apply(args: argparse.Namespace) -> int:
     completed = subprocess.run([tool, "--apply", theme.name], text=True)
     if completed.returncode != 0:
         return completed.returncode
+
+    # plasma-apply-lookandfeel copies the theme's pointers verbatim, including
+    # the Aurorae plugin name, which every published theme still gets wrong on
+    # Plasma 6.6. Fix it before verifying, so the audit reflects reality.
+    fixed = repair.aurorae_plugin(*repair.live_decoration())
+    if fixed:
+        print(_paint(f"  repaired {fixed}", "36"))
 
     print(f"\nApplied {theme.display_name}. Verifying:")
     rows = resolve.audit(theme.settings, resolve.live_settings())

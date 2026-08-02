@@ -13,7 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lolkde import (banner, catalog, install, kconfig, knsrc, legacy,  # noqa: E402
-                    manifest, paths, resolve, store)
+                    manifest, paths, repair, resolve, store)
 
 
 class TestManifestParsing(unittest.TestCase):
@@ -93,6 +93,61 @@ class TestResolution(unittest.TestCase):
 
     def test_builtin_qt_style_resolves(self):
         self.assertEqual(resolve.widget_style("fusion").status, resolve.OK)
+
+
+class TestAuroraePlugin(unittest.TestCase):
+    """Plasma 6.6 moved the Aurorae SVG themes to a second plugin.
+
+    Every theme in the store still names the old one. KWin loads the theme
+    regardless, so the desktop looks correct while System Settings shows no
+    decoration selected at all -- which reads as "window decorations are
+    broken on this machine" and sent us hunting in the wrong place.
+    """
+
+    def test_provider_is_one_of_the_two_known_plugins(self):
+        self.assertIn(resolve.aurorae_provider(),
+                      (resolve.AURORAE_LEGACY_PLUGIN, resolve.AURORAE_SVG_PLUGIN))
+
+    def test_stale_plugin_name_is_degraded_not_ok(self):
+        installed = _any_installed_aurorae_theme()
+        if installed is None:
+            self.skipTest("no Aurorae theme installed on this machine")
+        if resolve.aurorae_provider() == resolve.AURORAE_LEGACY_PLUGIN:
+            self.skipTest("this Plasma has no split Aurorae plugin")
+        result = resolve.decoration(resolve.AURORAE_LEGACY_PLUGIN, installed)
+        self.assertEqual(result.status, resolve.DEGRADED)
+        self.assertIn(resolve.AURORAE_SVG_PLUGIN, result.detail)
+
+    def test_correct_plugin_name_is_ok(self):
+        installed = _any_installed_aurorae_theme()
+        if installed is None:
+            self.skipTest("no Aurorae theme installed on this machine")
+        result = resolve.decoration(resolve.aurorae_provider(), installed)
+        self.assertEqual(result.status, resolve.OK)
+
+    def test_repair_is_a_no_op_when_already_correct(self):
+        self.assertIsNone(
+            repair.aurorae_plugin(resolve.aurorae_provider(),
+                                  "__aurorae__svg__anything"))
+
+    def test_repair_ignores_non_aurorae_decorations(self):
+        self.assertIsNone(repair.aurorae_plugin("org.kde.breeze", ""))
+
+    def test_kwin_reads_the_kdecoration2_group(self):
+        # KWin loads KDecoration3 plugins out of a group named for
+        # KDecoration2. Renaming the group silently unsets the decoration.
+        self.assertEqual(repair.DECO_GROUP, "org.kde.kdecoration2")
+
+
+def _any_installed_aurorae_theme() -> str | None:
+    for base in paths.data_dirs():
+        themes = base / "aurorae/themes"
+        if not themes.is_dir():
+            continue
+        for entry in sorted(themes.iterdir()):
+            if (entry / "decoration.svg").is_file():
+                return resolve.AURORAE_PREFIX + entry.name
+    return None
 
 
 class TestKvantumMatching(unittest.TestCase):

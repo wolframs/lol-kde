@@ -407,7 +407,11 @@ def _tabbox_id(package: Path) -> str:
     """`KPlugin.Id` from a switcher package, falling back to its directory name."""
     try:
         metadata = json.loads((package / "metadata.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError, UnicodeDecodeError):
+    except (OSError, ValueError, UnicodeDecodeError, RecursionError):
+        # RecursionError is not a ValueError: `json.loads` raises it on deeply
+        # nested input, and a tabbox package is third-party store content. An
+        # uncaught one here took out `doctor`, `check`, `apply` and `prune`
+        # with a traceback. Found by review on 2026-08-03.
         return package.name
     plugin = metadata.get("KPlugin") if isinstance(metadata, dict) else None
     found = plugin.get("Id") if isinstance(plugin, dict) else None
@@ -463,16 +467,21 @@ def desktop_switcher(name: str) -> Resolution:
     6.6 -- `kpackagetool6 --type KWin/DesktopSwitcher --list` reports the
     *type* as not found -- and the look-and-feel applier drops the key instead
     of writing it anywhere. So there is no live value to compare against and
-    nothing to install. Reported at all because a theme declaring an exotic
-    value here is promising something it cannot deliver.
+    nothing to install.
+
+    Always `OK`, never `DEGRADED`, for the same reason the stock switcher
+    spellings are: the user cannot act on it and has lost nothing. A first cut
+    warned on any non-stock value, and `doctor` then printed its
+    `Repair: lol-kde install …` block for a row whose own detail said there was
+    nothing to install, while `cmd_install` could never reach its "all
+    components already resolve" exit. Reported at all because the row shows
+    what the theme declared; the explanation is there under `-v`.
     """
-    r = Resolution("desktop-switcher", "Desktop switcher", name, DEGRADED)
-    if not name or name in STOCK_SWITCHERS or _search("plasma/look-and-feel", name):
-        r.status = OK
-        return r
-    r.detail = ("Plasma 6 has no KWin/DesktopSwitcher package type and its "
-                "theme applier never writes this key: declared, inert, and "
-                "nothing to install")
+    r = Resolution("desktop-switcher", "Desktop switcher", name, OK)
+    if name and name not in STOCK_SWITCHERS and not _search("plasma/look-and-feel", name):
+        r.detail = ("Plasma 6 has no KWin/DesktopSwitcher package type and its "
+                    "theme applier never writes this key: declared, inert, and "
+                    "nothing to install")
     return r
 
 

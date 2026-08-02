@@ -26,6 +26,7 @@ import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from . import journal, kconfig, paths, resolve, snapshot
 
@@ -58,6 +59,68 @@ BARE_GROUP_ALIASES = {
     ("plasmarc", "Wallpaper"): ("Wallpaper", ""),
     ("ksplashrc", "KSplash"): ("KSplash", ""),
 }
+
+
+def live_pointers() -> list[tuple[str, tuple[str, str, str]]]:
+    """(kind, the key the *live* value is under) for every pointer that has one.
+
+    `POINTERS` holds the group a **manifest** declares each component in, which
+    is not always where KDE stores the applied value. Using it to read the live
+    config silently found nothing for the task switcher, which is declared as
+    `[WindowSwitcher] LayoutName` and only ever written to `[TabBox] LayoutName`.
+
+    That mattered because the live value feeds the guard that protects whatever
+    is *in use right now*, independently of which theme declared it. With the
+    lookup coming back empty, `--drop <layout>` would quarantine the switcher
+    the session is using and refuse nothing. Found by review on 2026-08-03.
+    """
+    out: list[tuple[str, tuple[str, str, str]]] = []
+    for kind, pointer in POINTERS:
+        live = resolve.LIVE_POINTERS.get(pointer, pointer)
+        if live is not None:
+            out.append((kind, live))
+    return out
+
+
+def live_wallpapers() -> list[Path]:
+    """Every wallpaper the desktop is painting right now.
+
+    The same defect as the switcher above, and worse, because every machine
+    has a wallpaper while few have a user-installed switcher. `[plasmarc]
+    [Wallpaper] Image` is where a *manifest* declares one; there is no live
+    plasmarc key at all. The applied value is a `file://` URL per containment
+    inside `plasma-org.kde.plasma.desktop-appletsrc`:
+
+        [Containments][1][Wallpaper][org.kde.image][General]
+        Image=file:///home/…/.local/share/wallpapers/Layan
+
+    So the live-value guard never covered the wallpaper either, and on a
+    machine whose only *declared* reference to an image was a theme being
+    pruned, `prune` would move the image on screen into quarantine.
+
+    Returned as the package directory (`…/wallpapers/<name>`) where the URL
+    points inside one, because that is the granularity `locate` removes at.
+    """
+    parser = kconfig.read_ini(
+        paths.config_home() / "plasma-org.kde.plasma.desktop-appletsrc")
+    found: list[Path] = []
+    for section in parser.sections():
+        if "][Wallpaper][" not in f"[{section}]":
+            continue
+        for option in parser.options(section):
+            if kconfig.split_flags(option)[0] != "Image":
+                continue
+            raw = (parser.get(section, option) or "").strip()
+            if not raw.startswith("/") and not raw.startswith("file://"):
+                continue        # a plugin id or a colour, not a path
+            path = Path(unquote(urlparse(raw).path if "://" in raw else raw))
+            for candidate in [path, *path.parents]:
+                if candidate.parent.name == "wallpapers":
+                    path = candidate
+                    break
+            if path not in found:
+                found.append(path)
+    return found
 
 
 def look_and_feel_dir() -> Path:
@@ -260,10 +323,11 @@ def build(include_orphan_styles: bool = True) -> Plan:
     for directory in survivors:
         for _, (_, found) in components(directory).items():
             protected.update(str(p) for p in found)
-    for kind, (file, group, key) in POINTERS:
+    for kind, (file, group, key) in live_pointers():
         value = (live.get((file, group)) or {}).get(key, "").strip()
         if value:
             protected.update(str(p) for p in locate(kind, value) if p.exists())
+    protected.update(str(p) for p in live_wallpapers() if p.exists())
 
     for name in sorted(doomed):
         plan.remove.append(Removal("global-theme", name, themes[name],
@@ -362,11 +426,12 @@ def build_drop(names: list[str]) -> tuple[Plan, list[str]]:
     # let `--drop <display name>` past a refusal that `--drop <file stem>`
     # correctly triggered, for the same file.
     live_paths: set[str] = set()
-    for kind, (file, group, key) in POINTERS:
+    for kind, (file, group, key) in live_pointers():
         value = (live.get((file, group)) or {}).get(key, "").strip()
         if value:
             value = value.replace(resolve.AURORAE_PREFIX, "")
             live_paths.update(str(p) for p in locate(kind, value) if p.exists())
+    live_paths.update(str(p) for p in live_wallpapers() if p.exists())
 
     for name in names:
         found: list[tuple[str, Path]] = []

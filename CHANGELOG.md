@@ -97,6 +97,47 @@ under "Desktop layout" for the same reason.
   meanings, and the collision is what made ten sound like a pointer count. The
   dry run now says **packages**.
 
+### Then a review agent found five things, one of them serious
+
+Run at Wolfram's request against `0b78465..0d0486a`. **254 tests.**
+
+- **`prune` could quarantine the task switcher the session is using.**
+  `prune.POINTERS` holds the group a *manifest* declares each component in, and
+  the same table was used to read the *live* config. For the switcher those are
+  different groups, so the lookup found nothing and the guard that protects
+  what is in use never fired. `--drop <layout>` removed it with no refusal at
+  all. Fixed with `prune.live_pointers()`, which translates through
+  `resolve.LIVE_POINTERS`.
+- **The same defect covered the wallpaper, and that one is live on every
+  machine.** There is no live `[plasmarc][Wallpaper] Image` anywhere — the
+  applied value is a per-containment `file://` URL inside `appletsrc` — so the
+  in-use guard had never protected the image on screen. A theme being pruned
+  that was the only *declared* reference to it was enough. New
+  `prune.live_wallpapers()` reads appletsrc. Both cases now have a regression
+  test that fails without the fix; the wallpaper one fails by producing
+  `Removal(kind='wallpaper', …)` for the image being painted.
+- **`diff` announced a change to the tool as a change to the desktop.** An
+  older snapshot has no `Task switcher` row, so every diff spanning the upgrade
+  invented `+ newly configured`. Snapshots now record the label vocabulary the
+  writing version could produce; older ones say "newly configured, or not
+  recorded by the older snapshot", which is the honest answer rather than
+  either assertion. Inert rows also printed a blank value.
+- **A non-stock `[DesktopSwitcher]` value was permanently `warn`.** `doctor`
+  then printed its `Repair: lol-kde install …` block for a row whose own detail
+  said there was nothing to install, and `cmd_install` could never reach its
+  "nothing to do" exit. The reasoning already written down for the stock
+  switcher spellings applies here and had not been applied. Now always `ok`,
+  with the explanation under `-v`.
+- **`json.loads` raises `RecursionError`, which is not a `ValueError`.** A
+  deeply nested `metadata.json` in any `kwin/tabbox/*` directory — third-party
+  store content — took out `doctor`, `check`, `apply` and `prune` with a
+  traceback.
+
+One more, unprompted: the snapshot coverage probes were a hand-written list
+still commented "the seven pointers", so nothing proved `[TabBox] LayoutName`
+had been captured from its winning layer. Derived from `restore.components()`
+now. Coverage went from 13 facts to 16.
+
 ### Revert
 
 ```sh

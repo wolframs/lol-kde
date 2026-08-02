@@ -398,7 +398,13 @@ def cmd_please(args: argparse.Namespace) -> int:
                     kinds = {"xcursor": "cursors", "icons": "icons",
                              "colorschemes": "color-scheme",
                              "plasma-themes": "plasma-style",
-                             "aurorae": "decoration"}
+                             "aurorae": "decoration",
+                             # No theme installed here names a store-hosted
+                             # switcher, so this route has never run against a
+                             # real entry. Present so that when one does, the
+                             # right variant is asked for rather than the
+                             # first file in the archive.
+                             "kwinswitcher": "window-switcher"}
                     for dep in theme.dependencies:
                         prefer = wanted.get(kinds.get(dep.knsrc, ""), "")
                         result = installer.install_dependency(

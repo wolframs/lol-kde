@@ -260,18 +260,23 @@ def run_probes(files_dir: Path) -> list[ProbeResult]:
             results.append(ProbeResult(name, live, "GAP", found_at=locate_value(live),
                                        detail=f"{rel} was captured but holds no such value"))
 
-    # -- the seven pointers, each verified against the layer that actually wins
+    # -- every pointer, each verified against the layer that actually wins.
+    #
+    # Derived from `restore.components()` rather than transcribed. The list
+    # here used to be written out by hand and was still eight entries long,
+    # commented "the seven pointers", after the task switcher was added -- so
+    # nothing proved that `[TabBox] LayoutName`, a key `restore` now writes,
+    # had been captured from its winning layer. Same class of drift as the
+    # hardcoded count that `pointer_kinds()` exists to prevent.
+    #
+    # Imported here, not at module scope: `restore` imports this module.
+    from . import restore as _restore
+
     live = resolve.live_settings()
-    for filename, group, key, label in (
-        ("kdeglobals", "KDE", "widgetStyle", "widget-style"),
-        ("kdeglobals", "General", "ColorScheme", "color-scheme"),
-        ("kdeglobals", "Icons", "Theme", "icons"),
-        ("kcminputrc", "Mouse", "cursorTheme", "cursors"),
-        ("plasmarc", "Theme", "name", "plasma-style"),
-        ("ksplashrc", "KSplash", "Theme", "splash"),
-        ("kwinrc", "org.kde.kdecoration2", "theme", "decoration"),
-        ("kdeglobals", "KDE", "LookAndFeelPackage", "look-and-feel"),
-    ):
+    probes = [(f, g, k, name)
+              for name, keys in _restore.components().items()
+              for f, g, k in keys]
+    for filename, group, key, label in probes:
         value = live.get((filename, group), {}).get(key, "")
         origin = kconfig.origin(filename, group, key)
         if origin is None:
@@ -592,6 +597,13 @@ def _capture_state(root: Path) -> dict:
          "detail": r.resolution.detail if r.resolution else "",
          "path": str(r.resolution.path) if r.resolution and r.resolution.path else ""}
         for r in rows])
+
+    # The label vocabulary this version can produce, so `diff` can tell "the
+    # desktop gained a component" from "the tool learned a row". Without it,
+    # the first diff spanning a release that adds a pointer invents a semantic
+    # change per new label. Found by review 2026-08-03.
+    _json(state / "audit-labels.json",
+          sorted(set(resolve.POINTER_LABELS.values()) | {"Window decoration"}))
 
     _json(state / "resolved.json",
           {f"{f}/{g}": dict(v) for (f, g), v in sorted(live.items())})

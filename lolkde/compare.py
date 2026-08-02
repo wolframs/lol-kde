@@ -85,17 +85,40 @@ def compare(before: Path, after: Path) -> Report:
 
 # ---------------------------------------------------------------------------
 
+def _value(row: dict) -> str:
+    """What to print for an audit row.
+
+    `live` alone is wrong for an inert row -- one the theme declares and this
+    Plasma reads from nowhere, such as the desktop switcher. Those carry
+    `live: null`, so `diff` printed the label and then nothing at all.
+    """
+    return row.get("live") or row.get("declared") or ""
+
+
 def _semantic(before: Path, after: Path, report: Report) -> None:
     old = {r["label"]: r for r in (_load(before / "state/audit.json") or [])}
     new = {r["label"]: r for r in (_load(after / "state/audit.json") or [])}
 
+    # Which labels the *older* snapshot's version of this tool could produce.
+    # Without it, the first diff spanning a release that adds a pointer reports
+    # every new label as "newly configured" -- a change to the tool announced
+    # as a change to the desktop. Absent from snapshots taken before
+    # 2026-08-03, where the honest answer is that we cannot tell.
+    known = _load(before / "state/audit-labels.json")
+
     for label in sorted(set(old) | set(new)):
         a, b = old.get(label), new.get(label)
         if a is None:
-            report.semantic.append(Change("+", label, b.get("live") or "", note="newly configured"))
+            if known is not None and label not in known:
+                continue        # the older tool could not have recorded it
+            report.semantic.append(Change(
+                "+", label, _value(b),
+                note="newly configured" if known is not None else
+                     "newly configured, or not recorded by the older snapshot"))
             continue
         if b is None:
-            report.semantic.append(Change("-", label, a.get("live") or "", note="no longer configured"))
+            report.semantic.append(Change("-", label, _value(a),
+                                          note="no longer configured"))
             continue
         if a.get("status") != b.get("status"):
             # These three need three different fixes, so name them apart.

@@ -270,7 +270,8 @@ class TestValueLocator(unittest.TestCase):
 class TestCompare(unittest.TestCase):
     """Key-level diffing of two synthetic snapshots."""
 
-    def _snap(self, root: Path, files: dict[str, str], audit=None, outputs=None):
+    def _snap(self, root: Path, files: dict[str, str], audit=None, outputs=None,
+              labels=None):
         root.mkdir(parents=True, exist_ok=True)
         entries = []
         for relative, body in files.items():
@@ -287,7 +288,60 @@ class TestCompare(unittest.TestCase):
         (state / "inventory.json").write_text(json.dumps({}))
         if outputs is not None:
             (state / "outputs.json").write_text(json.dumps({"outputs": outputs}))
+        if labels is not None:
+            (state / "audit-labels.json").write_text(json.dumps(labels))
         return root
+
+    def test_a_row_the_older_tool_could_not_record_is_not_a_change(self):
+        # Adding a pointer to this tool made the first diff spanning the
+        # change report "+ Task switcher / newly configured" on a machine
+        # where nothing had happened -- a change to the tool announced as a
+        # change to the desktop. Found by review 2026-08-03.
+        with tempfile.TemporaryDirectory() as tmp:
+            old = self._snap(Path(tmp) / "a", {}, audit=[
+                {"label": "Icon theme", "live": "Tela", "status": "OK"}],
+                labels=["Icon theme"])
+            new = self._snap(Path(tmp) / "b", {}, audit=[
+                {"label": "Icon theme", "live": "Tela", "status": "OK"},
+                {"label": "Task switcher", "live": "big_icons", "status": "OK"}],
+                labels=["Icon theme", "Task switcher"])
+            report = compare.compare(old, new)
+        self.assertEqual([c.where for c in report.semantic], [])
+
+    def test_a_genuinely_new_component_is_still_reported(self):
+        # The suppression must key on the older tool's vocabulary, not on
+        # "absent from the older rows" -- otherwise it hides real changes.
+        with tempfile.TemporaryDirectory() as tmp:
+            old = self._snap(Path(tmp) / "a", {}, audit=[],
+                             labels=["Icon theme", "Task switcher"])
+            new = self._snap(Path(tmp) / "b", {}, audit=[
+                {"label": "Task switcher", "live": "big_icons", "status": "OK"}],
+                labels=["Icon theme", "Task switcher"])
+            report = compare.compare(old, new)
+        self.assertEqual([(c.kind, c.where, c.note) for c in report.semantic],
+                         [("+", "Task switcher", "newly configured")])
+
+    def test_a_snapshot_with_no_vocabulary_says_it_cannot_tell(self):
+        # Snapshots taken before 2026-08-03 have no audit-labels.json. Neither
+        # asserting nor hiding the change is honest, so the note says both.
+        with tempfile.TemporaryDirectory() as tmp:
+            old = self._snap(Path(tmp) / "a", {}, audit=[])
+            new = self._snap(Path(tmp) / "b", {}, audit=[
+                {"label": "Task switcher", "live": "big_icons", "status": "OK"}])
+            report = compare.compare(old, new)
+        self.assertEqual(len(report.semantic), 1)
+        self.assertIn("not recorded by the older snapshot", report.semantic[0].note)
+
+    def test_an_inert_row_prints_its_declared_value(self):
+        # Inert rows carry live=null, so `diff` printed the label and nothing.
+        with tempfile.TemporaryDirectory() as tmp:
+            old = self._snap(Path(tmp) / "a", {}, audit=[], labels=["Desktop switcher"])
+            new = self._snap(Path(tmp) / "b", {}, audit=[
+                {"label": "Desktop switcher", "live": None,
+                 "declared": "org.kde.breeze.desktop", "status": "OK"}],
+                labels=["Desktop switcher"])
+            report = compare.compare(old, new)
+        self.assertEqual(report.semantic[0].what, "org.kde.breeze.desktop")
 
     def test_changed_key_is_reported_with_both_values(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -635,13 +689,25 @@ class TestSwitchers(unittest.TestCase):
         self.assertEqual(rows[0].status, resolve.OK)
         self.assertEqual(rows[0].declared, "org.kde.breeze.desktop")
 
-    def test_an_exotic_desktop_switcher_warns_rather_than_promising_a_fix(self):
+    def test_an_exotic_desktop_switcher_explains_itself_without_warning(self):
+        # A first cut returned DEGRADED here. `doctor` then printed its
+        # `Repair: lol-kde install ...` block for a row whose own detail says
+        # there is nothing to install, and `cmd_install` could never reach its
+        # "all components already resolve" exit -- it re-fetched every
+        # dependency on every run. Caught by review on 2026-08-03.
         rows = resolve.audit(
             declared={("kwinrc", "DesktopSwitcher"): {"LayoutName": "Sliding"}},
             live={},
         )
-        self.assertEqual(rows[0].status, resolve.DEGRADED)
+        self.assertEqual(rows[0].status, resolve.OK)
         self.assertIn("nothing to install", rows[0].resolution.detail)
+
+    def test_no_switcher_row_can_make_doctor_advise_an_impossible_repair(self):
+        # The general form of the above: any status this pair can produce for a
+        # value nobody can install must not be counted as actionable.
+        for value in ["", "org.kde.breeze.desktop", "Sliding", "anything-else"]:
+            self.assertEqual(resolve.desktop_switcher(value).status, resolve.OK,
+                             value)
 
     def test_the_declared_value_is_printed_when_there_is_no_live_one(self):
         # An inert row has live=None. Printing `row.live or ""` left the
@@ -1601,6 +1667,47 @@ class TestPrune(unittest.TestCase):
         self.assertEqual(plan.remove, [])
         self.assertTrue(any("in use" in r for r in refusals))
 
+    def test_drop_refuses_the_switcher_the_session_is_using(self):
+        # The end-to-end form of the live-lookup bug, reproduced by review on
+        # 2026-08-03: install a switcher from the store, select it in System
+        # Settings, and no theme declares it. `prune` read the live value from
+        # `[WindowSwitcher]`, which is never written, so the guard that refuses
+        # to touch what is in use found nothing and the layout the session was
+        # using went to quarantine with no refusal at all.
+        self._theme("Keeper", "KeeperStyle", modern_style=True)
+        layout = self.data / "kwin/tabbox/mylayout"
+        layout.mkdir(parents=True)
+        (layout / "metadata.json").write_text(
+            json.dumps({"KPackageStructure": "KWin/WindowSwitcher",
+                        "KPlugin": {"Id": "mylayout"}}))
+        live = self._live("Keeper")
+        live[("kwinrc", "TabBox")] = {"LayoutName": "mylayout"}
+        with unittest.mock.patch.object(resolve, "live_settings",
+                                        return_value=live):
+            plan, refusals = prune.build_drop(["mylayout"])
+        self.assertEqual(plan.remove, [])
+        self.assertTrue(any("in use" in r for r in refusals), refusals)
+        self.assertTrue(layout.is_dir())
+
+    def test_the_wallpaper_on_screen_is_refused_even_if_no_theme_declares_it(self):
+        # There is no live `[plasmarc][Wallpaper] Image` on any machine, so
+        # before the fix nothing protected the image actually being painted.
+        self._theme("Keeper", "KeeperStyle", modern_style=True)
+        paper = self.data / "wallpapers/InUse"
+        paper.mkdir(parents=True)
+        (self.home / ".config").mkdir(parents=True, exist_ok=True)
+        (self.home / ".config/plasma-org.kde.plasma.desktop-appletsrc").write_text(
+            "[Containments][1][Wallpaper][org.kde.image][General]\n"
+            f"Image=file://{paper}\n")
+        with unittest.mock.patch.object(resolve, "live_settings",
+                                        return_value=self._live("Keeper")), \
+             unittest.mock.patch.object(paths, "config_home",
+                                        return_value=self.home / ".config"):
+            plan, refusals = prune.build_drop(["InUse"])
+        self.assertEqual(plan.remove, [])
+        self.assertTrue(any("in use" in r for r in refusals), refusals)
+        self.assertTrue(paper.is_dir())
+
     def test_drop_reports_a_name_that_does_not_exist(self):
         self._theme("Keeper", "KeeperStyle", modern_style=True)
         with unittest.mock.patch.object(resolve, "live_settings",
@@ -2551,6 +2658,53 @@ class TestPruneCanSeeEveryPointer(unittest.TestCase):
         for name in resolve.tabbox_layouts():
             for path in prune.locate("switcher", name):
                 self.assertIn(paths.data_home(), path.parents, path)
+
+    def test_live_lookups_use_the_group_kde_actually_writes(self):
+        # POINTERS holds the group a *manifest* declares each component in.
+        # Reading the live config with it found nothing for the switcher, so
+        # the guard that protects what is in use right now never covered it:
+        # `--drop <layout>` would quarantine the switcher the session is using
+        # and refuse nothing. Found by review on 2026-08-03.
+        live = dict(prune.live_pointers())
+        self.assertEqual(live["switcher"], ("kwinrc", "TabBox", "LayoutName"))
+        for kind, pointer in prune.POINTERS:
+            if kind in live:
+                self.assertIsNot(resolve.LIVE_POINTERS.get(pointer, pointer), None)
+
+    def test_the_wallpaper_on_screen_is_found_where_kde_stores_it(self):
+        # Same defect, and live on every machine rather than only on one with
+        # a user-installed switcher: there is no live `[plasmarc][Wallpaper]
+        # Image`. The applied value is a file:// URL per containment inside
+        # appletsrc, so the live-value guard never covered the wallpaper.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp)
+            (config / "plasma-org.kde.plasma.desktop-appletsrc").write_text(
+                "[Containments][1][Wallpaper][org.kde.image][General]\n"
+                "Image=file:///data/wallpapers/Scenery\n"
+                "\n"
+                "[Containments][2][Wallpaper][org.kde.image][General]\n"
+                "Image=file:///data/wallpapers/Other/contents/images/1920x1080.png\n"
+                "\n"
+                "[Containments][3][General]\n"
+                "wallpaperplugin=org.kde.color\n")
+            with unittest.mock.patch.object(paths, "config_home",
+                                            return_value=config):
+                found = prune.live_wallpapers()
+        # Both reduced to the package directory, which is what prune removes
+        # at; the containment with no image contributes nothing.
+        self.assertEqual(found, [Path("/data/wallpapers/Scenery"),
+                                 Path("/data/wallpapers/Other")])
+
+    def test_a_percent_encoded_wallpaper_path_survives(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp)
+            (config / "plasma-org.kde.plasma.desktop-appletsrc").write_text(
+                "[Containments][1][Wallpaper][org.kde.image][General]\n"
+                "Image=file:///data/wallpapers/Blue%20Sky\n")
+            with unittest.mock.patch.object(paths, "config_home",
+                                            return_value=config):
+                self.assertEqual(prune.live_wallpapers(),
+                                 [Path("/data/wallpapers/Blue Sky")])
 
     def test_a_dead_plasma5_switcher_name_has_nothing_to_quarantine(self):
         # The common case: nine themes here name org.kde.breeze.desktop, which

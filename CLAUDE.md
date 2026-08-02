@@ -606,3 +606,37 @@ wallpaper, or measure alpha directly and skip the screenshot.
 3. The KCM's own previews log `qt.svg: Could not resolve property:
    #linearGradient…` — that is one of the other 28 installed themes, not
    Layan, whose `decoration.svg` has no dangling references. Unidentified.
+
+## Untrusted names from the store are not path components
+
+Found by review on 2026-08-02, reproduced before fixing, and the worst defect
+this project has had.
+
+When an archive has no single top-level directory -- the normal shape for
+icon, cursor and colour-scheme uploads -- the installed directory is named
+after the **store entry's title**, whatever the uploader typed. That title was
+joined onto the install target and passed to `shutil.rmtree` under `--force`.
+
+A title of `..` was enough. `rmtree("~/.local/share/icons/..")` empties
+`~/.local/share`. No slash required, so it did not depend on what pling
+permits in a name; `../../plasma` escaped the target with no `--force` at all.
+`please` takes no auto-snapshot, unlike `install`, so nothing was recoverable.
+
+The rule, now enforced by `install._child_of()` and `store.safe_filename()`:
+
+**Every name that arrives over the network gets reduced to a single path
+component before it touches the filesystem, and the result is re-checked to be
+a direct child of its target.** Both guards, not one -- the component check
+alone misses an existing symlink in the target, and the containment check
+alone accepts a name that resolves to the target itself.
+
+Three places take untrusted names: `StoreItem.name` (entry title),
+`downloadname` (attachment filename), and archive member paths (already
+handled by `_safe_extract`). Guard at the point the value enters, not at the
+point it is used -- `store.download()` cannot help, because by then the
+traversal is in `destination.parent` and is indistinguishable from a directory
+the caller meant.
+
+Adjacent, same review: **`metadata.json` is an upload too.** A top level that
+is a list rather than an object raised `AttributeError` straight out of
+`please --dry-run`. `isinstance` before `.get()`, always.

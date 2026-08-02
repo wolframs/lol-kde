@@ -13,6 +13,12 @@ from pathlib import Path
 USER_AGENT = "lol-kde (+https://github.com/wolframs/lol-kde)"
 TIMEOUT = 30
 
+# `read()` buffers the whole body in RAM, and on many systems the temporary
+# directory it lands in is tmpfs -- so an oversized upload costs twice its size
+# in memory before anything notices. The largest legitimate theme seen here is
+# a 60 MB icon set.
+MAX_DOWNLOAD = 512 * (1 << 20)
+
 
 class StoreError(RuntimeError):
     pass
@@ -60,18 +66,60 @@ def encode_url(url: str) -> str:
     ))
 
 
-def _get(url: str) -> bytes:
-    request = urllib.request.Request(encode_url(url),
-                                     headers={"User-Agent": USER_AGENT})
+def safe_filename(name: str, fallback: str) -> str:
+    """One path component from a name the store chose, not us.
+
+    `downloadname` is uploader-controlled text that gets joined onto a
+    directory and written to. A value of `../../x` or an absolute path escapes
+    the temporary directory the caller carefully created; `..` or `.` names the
+    directory itself. Take the last component and nothing else.
+    """
+    cleaned = Path(name.strip()).name
+    return cleaned if cleaned and cleaned not in (".", "..") else fallback
+
+
+def _read(url: str) -> bytes:
+    """Fetch a URL, turning every transport failure into StoreError.
+
+    The handler list is long because this project keeps meeting exceptions that
+    are not where you would expect them in the hierarchy, each one costing a
+    whole multi-component install:
+
+    - `InvalidURL` is an `HTTPException`, not a `URLError` (a filename with a
+      space in it).
+    - `TimeoutError` is an `OSError`, not a `URLError` -- raised by `read()`
+      when a server sends headers and then stalls.
+    - `Request()` itself raises `ValueError` on a malformed URL, which is why
+      it is inside the `try` rather than above it.
+    """
     try:
+        request = urllib.request.Request(encode_url(url),
+                                         headers={"User-Agent": USER_AGENT})
         with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
             return response.read()
     except urllib.error.URLError as exc:
         raise StoreError(f"{url}: {exc}") from exc
     except http.client.HTTPException as exc:
-        # InvalidURL and friends are HTTPExceptions, not URLErrors. Uncaught,
-        # they escape as a traceback and abort a whole multi-item install.
         raise StoreError(f"{url}: {type(exc).__name__}: {exc}") from exc
+    except ValueError as exc:
+        raise StoreError(f"{url}: {exc}") from exc
+    except OSError as exc:
+        raise StoreError(f"{url}: {exc}") from exc
+
+
+def _get(url: str) -> ET.Element:
+    """Fetch an OCS endpoint and parse it. Never raises anything but StoreError.
+
+    `ET.ParseError` subclasses `SyntaxError`, so it sails past every handler in
+    this project that catches `StoreError`. A store that answers with an HTML
+    error page -- which happens -- would otherwise abort the run with a
+    traceback reading `no element found`.
+    """
+    raw = _read(url)
+    try:
+        return ET.fromstring(raw)
+    except ET.ParseError as exc:
+        raise StoreError(f"{url}: malformed XML from the store: {exc}") from exc
 
 
 def _ocs(root: ET.Element) -> ET.Element:
@@ -90,8 +138,7 @@ def _text(node: ET.Element, tag: str) -> str:
 
 
 def fetch_metadata(host: str, content_id: str) -> StoreItem:
-    raw = _get(f"https://{host}/ocs/v1/content/data/{content_id}")
-    data = _ocs(ET.fromstring(raw))
+    data = _ocs(_get(f"https://{host}/ocs/v1/content/data/{content_id}"))
     content = data.find("content")
     if content is None:
         raise StoreError(f"content {content_id} not found on {host}")
@@ -114,8 +161,7 @@ def list_downloads(host: str, content_id: str) -> list[tuple[int, str]]:
     01-Layan-border-cursors, 02-Layan-cursors and 03-Layan-white-cursors.
     Fetching only the first silently installs the wrong variant.
     """
-    raw = _get(f"https://{host}/ocs/v1/content/data/{content_id}")
-    data = _ocs(ET.fromstring(raw))
+    data = _ocs(_get(f"https://{host}/ocs/v1/content/data/{content_id}"))
     content = data.find("content")
     if content is None:
         return []
@@ -149,27 +195,48 @@ def choose_download(host: str, content_id: str, prefer: str = "") -> int:
 
 def fetch_download(host: str, content_id: str, index: int = 1) -> DownloadTarget:
     """Resolve a signed download URL. Store links are time-limited."""
-    raw = _get(f"https://{host}/ocs/v1/content/download/{content_id}/{index}")
-    data = _ocs(ET.fromstring(raw))
+    data = _ocs(_get(f"https://{host}/ocs/v1/content/download/{content_id}/{index}"))
     content = data.find("content")
     if content is None:
         raise StoreError(f"no download {index} for content {content_id}")
     url = _text(content, "downloadlink")
     if not url:
         raise StoreError(f"content {content_id} exposes no direct download link")
-    name = _text(content, "downloadname") or Path(url.split("?")[0]).name
+    if urllib.parse.urlsplit(url).scheme.lower() != "https":
+        # The first hop is TLS to a known API host, so a plain-http or file://
+        # downloadlink means either a coerced link or a store bug. Neither is
+        # worth honouring silently.
+        raise StoreError(f"content {content_id} offers a non-https download "
+                         f"link: {url!r}")
+    name = safe_filename(_text(content, "downloadname")
+                         or Path(url.split("?")[0]).name,
+                         fallback=f"download-{content_id}")
     return DownloadTarget(url=url, filename=name, mimetype=_text(content, "mimetype"))
 
 
 def download(target: DownloadTarget, destination: Path) -> Path:
+    """Write a store download to `destination`, which the caller owns.
+
+    Callers build `destination` as `<their directory> / target.filename`, and
+    `target.filename` came off the wire. A `downloadname` of
+    `../../../.config/kdeglobals` used to write straight through the caller's
+    temporary directory, so it is now reduced to a single component in
+    `fetch_download`, where the untrusted value enters.
+
+    The basename is re-checked here as well, but note what this can and cannot
+    promise: a traversal that has already been joined into `destination.parent`
+    is indistinguishable from a directory the caller meant. **The load-bearing
+    guard is `fetch_download`'s**, not this one.
+    """
+    destination = destination.parent / safe_filename(destination.name,
+                                                     fallback="download")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    request = urllib.request.Request(encode_url(target.url),
-                                     headers={"User-Agent": USER_AGENT})
+    body = _read(target.url)
+    if len(body) > MAX_DOWNLOAD:
+        raise StoreError(f"download is {len(body) // (1 << 20)} MiB, over the "
+                         f"{MAX_DOWNLOAD // (1 << 20)} MiB limit")
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
-            destination.write_bytes(response.read())
-    except urllib.error.URLError as exc:
+        destination.write_bytes(body)
+    except OSError as exc:
         raise StoreError(f"download failed: {exc}") from exc
-    except http.client.HTTPException as exc:
-        raise StoreError(f"download failed: {type(exc).__name__}: {exc}") from exc
     return destination

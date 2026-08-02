@@ -2057,5 +2057,216 @@ class TestDryRunReadsTheManifest(unittest.TestCase):
         self.assertIn("nothing installed", source)
 
 
+class TestHostileStoreNames(unittest.TestCase):
+    """Names that arrive over the network are not path components.
+
+    Found by review on 2026-08-02, reproduced before fixing. A store entry's
+    title becomes the installed directory name whenever the archive has no
+    single top-level directory -- the normal shape for icon, cursor and
+    colour-scheme uploads. It was joined onto the install target and passed to
+    `shutil.rmtree` under `--force` with no validation at all.
+    """
+
+    def _payload(self, tmp: Path) -> Path:
+        # A top-level *file* is what makes _payloads() return None and the
+        # store title get used as the directory name.
+        payload = tmp / "unpacked"
+        payload.mkdir()
+        (payload / "index.theme").write_text("evil")
+        return payload
+
+    def test_a_title_of_dotdot_cannot_empty_the_parent_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "share" / "icons"
+            target.mkdir(parents=True)
+            (target / "ExistingTheme").mkdir()
+            sibling = root / "share" / "OTHER-DATA"
+            sibling.mkdir()
+            (sibling / "keep.txt").write_text("keep me")
+
+            with self.assertRaises(ValueError):
+                install._install_tree(self._payload(root), target, "..",
+                                      force=True)
+            self.assertTrue((target / "ExistingTheme").is_dir())
+            self.assertEqual((sibling / "keep.txt").read_text(), "keep me")
+
+    def test_a_relative_title_lands_inside_the_target(self):
+        # Contained, not refused: a title with a slash in it is more likely to
+        # be a human writing "Layan GTK/Kvantum" than an attack, and the
+        # security property that matters is that nothing lands outside.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "share" / "icons"
+            target.mkdir(parents=True)
+            destinations = install._install_tree(
+                self._payload(root), target, "../../plasma", force=False)
+            self.assertFalse((root / "plasma").exists())
+            self.assertEqual(destinations, [target / "plasma"])
+
+    def test_an_absolute_title_lands_inside_the_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "icons"
+            target.mkdir(parents=True)
+            outside = root / "outside"
+            outside.mkdir()
+            destinations = install._install_tree(
+                self._payload(root), target, str(outside / "pwned"), force=True)
+            self.assertFalse((outside / "pwned").exists())
+            self.assertEqual(destinations, [target / "pwned"])
+
+    def test_empty_and_dot_titles_are_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "icons"
+            target.mkdir()
+            for name in ("", " ", ".", "..", "   .. "):
+                with self.subTest(name=name):
+                    with self.assertRaises(ValueError):
+                        install._child_of(target, name)
+
+    def test_an_ordinary_title_still_works(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "icons"
+            target.mkdir()
+            destinations = install._install_tree(
+                self._payload(root), target, "Tela-dark", force=False)
+            self.assertEqual([d.name for d in destinations], ["Tela-dark"])
+            self.assertTrue((target / "Tela-dark" / "index.theme").is_file())
+
+    def test_a_symlink_in_the_target_is_not_deleted_through(self):
+        # An existing entry that is a symlink elsewhere would otherwise be an
+        # rmtree route out of the target.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "icons"
+            target.mkdir()
+            precious = root / "precious"
+            precious.mkdir()
+            (precious / "data").write_text("keep")
+            (target / "Theme").symlink_to(precious, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                install._install_tree(self._payload(root), target, "Theme",
+                                      force=True)
+            self.assertEqual((precious / "data").read_text(), "keep")
+
+    # -- downloadname ------------------------------------------------------
+
+    def test_a_traversing_downloadname_is_reduced_to_a_component(self):
+        self.assertEqual(store.safe_filename("../../../.config/kdeglobals", "x"),
+                         "kdeglobals")
+        self.assertEqual(store.safe_filename("/etc/passwd", "x"), "passwd")
+
+    def test_a_useless_downloadname_falls_back(self):
+        for name in ("", "  ", ".", ".."):
+            with self.subTest(name=name):
+                self.assertEqual(store.safe_filename(name, "download-42"),
+                                 "download-42")
+
+    def test_a_hostile_downloadname_cannot_escape_the_callers_directory(self):
+        # Exercised the way it actually happens: the value enters at
+        # fetch_download, the caller joins it onto its temp dir, download()
+        # writes. Guarding only inside download() is not enough -- by then the
+        # traversal is in `destination.parent`, which is indistinguishable
+        # from a directory the caller meant.
+        xml = ("<ocs><meta><statuscode>100</statuscode></meta><data><content>"
+               "<downloadlink>https://h/x.tar.gz</downloadlink>"
+               "<downloadname>../../../.config/kdeglobals</downloadname>"
+               "</content></data></ocs>")
+        with unittest.mock.patch.object(store, "_read", return_value=xml.encode()):
+            target = store.fetch_download("h", "1")
+        self.assertEqual(target.filename, "kdeglobals")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tmpdir").mkdir()
+            victim = root / "kdeglobals"
+            victim.write_text("original")
+            with unittest.mock.patch.object(store, "_read", return_value=b"evil"):
+                written = store.download(target, root / "tmpdir" / target.filename)
+            self.assertEqual(victim.read_text(), "original")
+            self.assertEqual(written.parent.name, "tmpdir")
+
+    def test_a_non_https_download_link_is_refused(self):
+        for link in ("file:///etc/passwd", "http://host/x.tar.gz"):
+            with self.subTest(link=link):
+                xml = ("<ocs><meta><statuscode>100</statuscode></meta><data>"
+                       f"<content><downloadlink>{link}</downloadlink>"
+                       "</content></data></ocs>")
+                with unittest.mock.patch.object(
+                        store, "_read", return_value=xml.encode()):
+                    with self.assertRaises(store.StoreError) as caught:
+                        store.fetch_download("h", "1")
+                self.assertIn("non-https", str(caught.exception))
+
+    def test_an_oversized_download_is_refused_rather_than_written(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / "big.tar"
+            target = store.DownloadTarget(url="https://h/x", filename="big.tar",
+                                          mimetype="")
+            oversized = b"x" * (store.MAX_DOWNLOAD + 1)
+            with unittest.mock.patch.object(store, "_read", return_value=oversized):
+                with self.assertRaises(store.StoreError):
+                    store.download(target, destination)
+            self.assertFalse(destination.exists())
+
+
+class TestExceptionsThatEscapedTheirHandlers(unittest.TestCase):
+    """This project keeps meeting exceptions in surprising parts of the tree.
+
+    Two cost a whole multi-component install before being found live
+    (`tarfile.AbsoluteLinkError` is a `TarError`, not an `OSError`;
+    `http.client.InvalidURL` is an `HTTPException`, not a `URLError`). Review
+    found four more of the same shape. `cli.main()` catches only
+    `KeyboardInterrupt`, so each one is a traceback.
+    """
+
+    def test_malformed_xml_becomes_a_StoreError(self):
+        # A store that answers with an HTML error page. ET.ParseError
+        # subclasses SyntaxError, so it passed every `except StoreError`.
+        with unittest.mock.patch.object(store, "_read",
+                                        return_value=b"<html>nope</html>"):
+            with self.assertRaises(store.StoreError):
+                store.fetch_metadata("host", "1")
+
+    def test_a_stalled_read_becomes_a_StoreError(self):
+        # TimeoutError is an OSError, not a URLError.
+        with unittest.mock.patch.object(store.urllib.request, "urlopen",
+                                        side_effect=TimeoutError("timed out")):
+            with self.assertRaises(store.StoreError):
+                store._read("https://host/x")
+
+    def test_a_malformed_url_becomes_a_StoreError(self):
+        # Request() raises ValueError, and used to sit outside the try block.
+        for url in ("not a url", "https://[::1/x"):
+            with self.subTest(url=url):
+                with self.assertRaises(store.StoreError):
+                    store._read(url)
+
+    def test_metadata_that_is_not_an_object_yields_no_dependencies(self):
+        for payload in ("[{}]", '"a string"', "42", "null"):
+            with self.subTest(payload=payload):
+                self.assertEqual(manifest.parse_dependencies(json.loads(payload)), [])
+
+    def test_a_scalar_dependency_list_yields_nothing(self):
+        self.assertEqual(
+            manifest.parse_dependencies({"X-KPackage-Dependencies": "kns://a/b/1"}), [])
+
+    def test_non_string_dependency_entries_are_skipped_not_fatal(self):
+        deps = manifest.parse_dependencies({"X-KPackage-Dependencies": [
+            None, 42, "kns://icons.knsrc/api.kde-look.org/1279924", {"a": 1}]})
+        self.assertEqual([d.content_id for d in deps], ["1279924"])
+
+    def test_the_dry_run_survives_a_hostile_metadata_json(self):
+        # Reproduced end to end before the fix: `please --dry-run` against a
+        # package whose metadata.json is a list died with AttributeError.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "unpacked"
+            root.mkdir()
+            (root / "metadata.json").write_text('[{"X-KPackage-Dependencies": []}]')
+            self.assertEqual(manifest.dependencies_in_tree(root), [])
+
+
 if __name__ == "__main__":
     unittest.main()

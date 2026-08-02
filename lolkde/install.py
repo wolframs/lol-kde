@@ -120,6 +120,36 @@ def _payloads(source: Path) -> list[Path] | None:
     return None
 
 
+def _child_of(target: Path, name: str) -> Path:
+    """`target/name`, or refuse. `name` is never ours.
+
+    When an archive has no single top-level directory -- the normal shape for
+    icon, cursor and colour-scheme uploads -- the installed directory is named
+    after the **store entry's title**, which is whatever the uploader typed.
+    That title used to be joined onto the install target and handed to
+    `shutil.rmtree` under `--force`, with nothing in between.
+
+    A title of `..` was enough: `rmtree("~/.local/share/icons/..")` empties
+    `~/.local/share`. No slash required, so it did not depend on what the store
+    permits in a name. `../../plasma` escaped the target without `--force` at
+    all. `please` takes no auto-snapshot, so there was nothing to restore from
+    either.
+
+    Two independent guards, because either alone can be reasoned around: strip
+    the name to a single component, then require the result to be a direct
+    child of the target once resolved. The second also catches an existing
+    symlink in the target pointing somewhere else, which would otherwise be a
+    route to deleting through it.
+    """
+    cleaned = Path(name.strip()).name
+    if not cleaned or cleaned in (".", ".."):
+        raise ValueError(f"unusable package name {name!r}")
+    destination = target / cleaned
+    if destination.resolve().parent != target.resolve():
+        raise ValueError(f"refusing to install {name!r} outside {target}")
+    return destination
+
+
 def _install_tree(source: Path, target: Path, name: str, force: bool) -> list[Path]:
     """Move an extracted payload into its final home. Returns destinations."""
     target.mkdir(parents=True, exist_ok=True)
@@ -131,7 +161,7 @@ def _install_tree(source: Path, target: Path, name: str, force: bool) -> list[Pa
 
     destinations: list[Path] = []
     for payload, payload_name in zip(payloads, names):
-        destination = target / payload_name
+        destination = _child_of(target, payload_name)
         if destination.exists():
             if not force:
                 raise FileExistsError(destination)
@@ -184,7 +214,7 @@ def place_archive(archive: Path, route, name: str, force: bool) -> tuple[str, st
     bare = not is_archive(archive)
     if route.uncompress == "never" or bare:
         route.target.mkdir(parents=True, exist_ok=True)
-        destination = route.target / archive.name
+        destination = _child_of(route.target, archive.name)
         if destination.exists() and not force:
             return "skipped", f"already present at {destination}", destination
         shutil.copy2(archive, destination)

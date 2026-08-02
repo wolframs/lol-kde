@@ -74,9 +74,22 @@ def list_installed() -> list[tuple[str, Path]]:
 
 
 def parse_dependencies(metadata: dict) -> list[Dependency]:
+    """Dependencies out of a metadata.json that nobody validated.
+
+    The file comes from a store upload, so nothing about its shape is
+    guaranteed. A top level that is a list rather than an object made this
+    raise `AttributeError` ('list' object has no attribute 'get') straight out
+    of `please --dry-run`, past every handler.
+    """
+    if not isinstance(metadata, dict):
+        return []
     raw = metadata.get("X-KPackage-Dependencies") or []
+    if not isinstance(raw, list):
+        return []
     deps: list[Dependency] = []
     for uri in raw:
+        if not isinstance(uri, str):
+            continue
         match = KNS_URI.match(uri.strip())
         if match:
             deps.append(
@@ -140,9 +153,13 @@ def load(name: str) -> GlobalTheme:
     if metadata_json.is_file():
         try:
             data = json.loads(metadata_json.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            data = {}
+        if not isinstance(data, dict):
             data = {}
         theme.dependencies = parse_dependencies(data)
-        theme.display_name = data.get("KPlugin", {}).get("Name") or name
+        plugin = data.get("KPlugin")
+        theme.display_name = (plugin.get("Name") if isinstance(plugin, dict)
+                              else None) or name
 
     return theme

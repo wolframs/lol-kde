@@ -16,8 +16,8 @@
 
 **KDE global themes declare their dependencies. Nothing installs them. This does.**
 
-A Plasma "Global Theme" is not a theme. It is a small text file of pointers to six
-other components that must already be installed:
+A Plasma "Global Theme" is not a theme. It is a small text file of pointers to
+other components that must already be installed -- up to seven of them:
 
 ```ini
 # Sweet-Ambar-Blue/contents/defaults -- the entire functional content
@@ -48,6 +48,9 @@ Discover does not read it. `lol-kde` does.
 ## Install
 
 Python 3.11+, standard library only. No dependencies, no venv, nothing to rot.
+It shells out to KDE's own tools -- `kwriteconfig6`, `kreadconfig6`,
+`kpackagetool6`, `plasma-apply-lookandfeel`, `qdbus6` -- and reports what it
+cannot find rather than guessing.
 
 ```sh
 git clone https://github.com/wolframs/lol-kde ~/Projects/lol-kde
@@ -66,7 +69,7 @@ lol-kde doctor                      # what is applied right now, and what is bro
 lol-kde list                        # installed global themes
 lol-kde check <theme>               # resolve one theme's pointers
 lol-kde install <theme>             # fetch its missing dependencies from the KDE Store
-lol-kde install <theme> --dry-run   # resolve and report, download nothing
+lol-kde install <theme> --dry-run   # resolve and report, install nothing
 lol-kde apply <theme>               # apply, then verify it actually took
 lol-kde why                         # what a Global Theme actually is
 lol-kde legacy                      # packages using pre-5.19 metadata.desktop
@@ -84,7 +87,15 @@ lol-kde history                     # what this tool has done to your machine
 lol-kde restore <id>                # print a plan; writes nothing
 lol-kde restore <id> --apply        # actually do it, after confirming
 lol-kde restore <id> --component icons,decoration
+
+lol-kde prune                       # what is left over from a previous Plasma
+lol-kde prune --apply               # move it to quarantine (never deletes)
+lol-kde prune --drop Name,Other     # drop named components instead
 ```
+
+Every command prints a plan and writes nothing unless you pass `--apply`
+(`restore`, `prune`), `--remove` (`legacy`) or name a mutating verb outright
+(`install`, `apply`, `please`). `-v` after any subcommand shows the paths.
 
 ## `lol-kde restore` — put a snapshot back, one key at a time
 
@@ -113,9 +124,14 @@ Three things it will tell you that a file copy cannot:
   differently even after a perfect restore. This is usually the single most
   useful line it prints.
 
-`~/.config/kdedefaults/` is never written — it is re-derived by re-applying
-the look-and-feel package, because hand-writing that layer is the canonical
-way to manufacture a state that never existed. Nothing is ever unlinked;
+`~/.config/kdedefaults/` is never written. Hand-writing that layer is the
+canonical way to manufacture a state that never existed, so restore does not:
+it replays into `~/.config`, which sits above `kdedefaults` in the cascade and
+therefore wins. The cost is honest and reported — if the snapshot's value came
+from `kdedefaults` and the live one does not, you get `pin-lost`, meaning the
+value is correct now but is a user-layer pin rather than a theme default. To
+get the theme layer itself back, re-apply the package:
+`plasma-apply-lookandfeel --apply <package>`. Nothing is ever unlinked;
 replaced files go to `~/.lol-kde/restores/<ts>/removed/`. There is no
 automatic rollback, on purpose: a rollback is itself a restore, run by the
 code path that just demonstrated it can fail, at the moment the state is least
@@ -159,7 +175,7 @@ that actually *wins* was captured. `cursorTheme` resolves from
 `kdedefaults/kcminputrc`, so a `~/.config`-only manifest would pass a naive
 "the key exists somewhere" test and still be unrestorable.
 
-Snapshots are ~500 KB and take about two seconds. Nothing is ever pruned
+Snapshots are ~650 KB and take about two seconds. Nothing is ever pruned
 automatically.
 
 ## `lol-kde diff` — what changed, and does it matter
@@ -177,7 +193,8 @@ SETTINGS
 
 UNMANIFESTED
   files that changed and are in no manifest entry
-  ~ config  kwinoutputconfig.json      << looks load-bearing
+  ~ config  spectaclerc
+            looks load-bearing
 ```
 
 `SEMANTIC` reports status transitions, which need different fixes:
@@ -196,10 +213,10 @@ maintaining a blocklist.
 flag to disable that; the only thing it could do is destroy the artifact that
 makes the operation undoable.
 
-**Restore is designed but not built** — see
-[`docs/restore-design.md`](docs/restore-design.md) and
-[`ROADMAP.md`](ROADMAP.md). It is blocked on three tests in
-[`docs/open-questions.md`](docs/open-questions.md).
+The design, and the measurements that forced it, are in
+[`docs/restore-design.md`](docs/restore-design.md). What is built versus
+merely unit-tested is tracked in [`ROADMAP.md`](ROADMAP.md); what is claimed
+but unverified is in [`docs/open-questions.md`](docs/open-questions.md).
 
 `doctor` compares the live configuration against what the applied theme declares:
 
@@ -208,13 +225,22 @@ Applied global theme: Sweet-Ambar-Blue
   drift  Widget style       Oxygen
          theme declares 'kvantum'; changed since
   ok     Colour scheme      SweetAmbarBlue
+  ok     Icon theme         candy-icons
   unset  Cursor theme       (not set)
          theme declares 'Sweet-cursors' but nothing set it; KDE default in use
+  ok     Plasma style       Sweet-Ambar-Blue
+  ok     Splash screen      Sweet-Ambar-Blue
   unset  Window decoration  (not set)
          theme declares 'Sweet-ambar-blue' but nothing set it; KDE default in use
 
-3/6 ok, 3 unset
+5/7 ok, 2 unset
+
+Repair: lol-kde install Sweet-Ambar-Blue   # fetch missing pieces
+        lol-kde apply Sweet-Ambar-Blue     # reset unset/drifted pointers
 ```
+
+Seven components, not six -- `doctor` prints one row per pointer a global
+theme can declare.
 
 ### Statuses
 
@@ -225,6 +251,48 @@ Applied global theme: Sweet-Ambar-Blue
 | `unset` | the theme declares this component, but nothing set it; a KDE default is in effect |
 | `warn` | present but will not render as intended (see Kvantum, below) |
 | `MISS` | the configured value names something not installed; KDE is silently falling back |
+
+## `lol-kde prune` — remove what a previous Plasma left behind
+
+An upgraded machine accumulates global themes built for the previous Plasma
+major version, plus the components only they pointed at. `prune` finds them and
+moves them out of the way.
+
+```sh
+lol-kde prune                    # a plan, and nothing else
+lol-kde prune --apply            # move them to quarantine
+lol-kde prune --drop Name,Other  # drop named components instead of sweeping
+```
+
+**Nothing is deleted.** Removals are *moved* to
+`~/.lol-kde/pruned/<id>/`, keeping their path relative to your home directory,
+with a `manifest.json` and a `RESTORE.md` whose undo script actually runs. A
+pre-prune snapshot is taken first, unconditionally. Deleting the quarantine
+directory is a separate decision you make later.
+
+The generation verdict comes from the Plasma style a theme declares: a style
+shipping `metadata.desktop` and no `metadata.json` predates Plasma 5.19. The
+style is resolved across every data directory the way KDE resolves it, and a
+system-provided style is never evidence about a user-installed theme —
+distro packaging is not a statement about your theme. A theme with no verdict
+either way is listed as undecided and left alone.
+
+Four refusals, and naming a thing explicitly overrides none of them:
+
+| refused when | why |
+|---|---|
+| it is the applied global theme | whatever its generation |
+| the live configuration points at it | you are looking at it right now |
+| any installed theme references it — including one under `/usr` | a distro theme may point at something in your home directory |
+| it is outside your own data directories, or not owned by you | not ours to move |
+
+References are compared by **resolved path**, not by name. A colour scheme
+called `Sweet-Ambar-Blue` lives in `SweetAmbarBlue.colors`, and comparing the
+names lets one spelling slip past a refusal the other triggers.
+
+`--drop` exists because **unreferenced is not unwanted**. `Tela-dark` sitting
+next to the `Tela` you use is not garbage, so nothing infers that for you;
+removing it is a decision you make by name.
 
 ## `lol-kde please <url>`
 
@@ -348,8 +416,9 @@ precisely like "window decorations are broken on this machine".
 `SweetAmbarBlue.colors`. Matching on filename produces false negatives; `lol-kde`
 matches on the internal `Name=` field, as KDE does.
 
-**Cursors and icons have six search paths**, including the legacy `~/.icons`.
-Checking only `~/.local/share/icons` will tell you something is missing when it is not.
+**Cursors and icons have several search paths**, including the legacy
+`~/.icons`, and how many depends on `XDG_DATA_DIRS`. Checking only
+`~/.local/share/icons` will tell you something is missing when it is not.
 
 **A global theme's settings are not in `~/.config/kdeglobals`.** Applying one writes
 to a `~/.config/kdedefaults/` layer, so explicit user choices in `~/.config` still
@@ -372,12 +441,24 @@ unpacking mode and adoption command. Content comes from the OCS API
 (`/ocs/v1/content/data/<id>` for metadata, `/ocs/v1/content/download/<id>/1` for a
 signed link).
 
-Archives are unpacked with path-traversal guards (`tarfile` `filter="data"`, explicit
-zip member checks). Whether an archive has a single top-level directory is *detected*
-rather than trusted, because uploads routinely disagree with their category's
-declared `Uncompress` mode.
+Whether an archive has a single top-level directory is *detected* rather than
+trusted, because uploads routinely disagree with their category's declared
+`Uncompress` mode. Existing content is never overwritten without `--force`.
 
-Existing content is never overwritten without `--force`.
+Everything past this point arrives from a third party, so:
+
+- **Archive members** are filtered per-member with `tarfile.data_filter` and
+  explicit zip member checks. Per-member rather than `filter="data"` wholesale,
+  because one bad symlink in a 3,000-file icon theme should cost you that
+  symlink, not the theme — and certainly not the other eighteen dependencies.
+  Skipped entries are counted and reported, never silently dropped.
+- **Names** — the store entry's title, and the attachment filename — are
+  reduced to a single path component before they touch the filesystem, and the
+  result is re-checked to be a direct child of its target. Both, not either: a
+  title of `..` was once enough to make `--force` empty `~/.local/share`.
+- **Download links** must be `https`, and bodies are capped at 512 MiB.
+- **`metadata.json` is an upload too**, so its shape is validated rather than
+  assumed.
 
 ## Legacy metadata
 
@@ -395,6 +476,29 @@ installed global theme**. A style named `Sweet` is needed by the global theme na
 Aurorae window decorations are deliberately excluded: `metadata.desktop` is their
 normal format, not a legacy marker.
 
+## Where this has actually been run
+
+One machine. Everything in this README that describes behaviour rather than
+design was measured on a single Kubuntu-derived system running **Plasma 6.6.5
+on Wayland**, with Kvantum as the widget style and one user. The unit tests
+(228 of them) run anywhere; the integration facts do not have that backing.
+
+That is not a support boundary — try it wherever you like — it is a statement
+about the evidence. Concretely, things that are likely to differ elsewhere:
+
+- **Qt plugin paths.** Style detection globs `/usr/lib/*/qt6/plugins`,
+  `/usr/lib64/qt6/plugins` and `/usr/local/lib/qt6/plugins`. On a layout that
+  uses none of those (NixOS, Guix) a working widget style reads as missing,
+  and the Plasma 6.6 Aurorae check silently finds nothing to report.
+- **`kpackagetool6` output is parsed in English.** Under another locale, a
+  re-install of an already-present package reports a failure instead of
+  "already installed".
+- **Plasma 6.6 specifically.** The Aurorae plugin split this tool repairs
+  landed in 6.6; on 6.0–6.5 that repair is unnecessary and inert.
+
+If it does something wrong on your machine, that is interesting and worth an
+issue — the failure modes above are guesses, not observations.
+
 ## Limitations
 
 - SDDM themes install system-wide and need root; `lol-kde` reports them and stops.
@@ -402,6 +506,12 @@ normal format, not a legacy marker.
 - Themes that declare no `X-KPackage-Dependencies` cannot be repaired automatically —
   `check` still tells you exactly what is missing.
 - Store downloads are signed and time-limited; a failed download is worth retrying.
+- Restore covers the seven theme pointers and the decoration group. Kvantum's
+  own config, the Plasma panel layout (`appletsrc`) and the generated
+  GTK/xsettingsd bridge files are captured but never written back — see
+  `docs/restore-design.md` §8.
+- `prune`'s generation verdict needs a theme to declare a Plasma style. Themes
+  that declare none are reported as undecided, not swept.
 
 ## Licence
 

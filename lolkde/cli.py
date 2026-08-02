@@ -597,8 +597,16 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
     if args.around:
         return _snapshot_around(args)
 
-    meta = snapshot.capture(message=args.message, label=args.label,
-                            with_sweep=not args.no_sweep)
+    lock = restorer.Lock()
+    held = lock.acquire(break_stale=False)
+    if held:
+        print(f"error: {held}", file=sys.stderr)
+        return 2
+    try:
+        meta = snapshot.capture(message=args.message, label=args.label,
+                                with_sweep=not args.no_sweep)
+    finally:
+        lock.release()
     journal.record("snapshot", snapshot_id=meta["id"], reason="manual",
                    message=args.message, coverage=meta["coverage"])
     return _report_snapshot(meta, args.verbose)
@@ -611,7 +619,11 @@ def _report_snapshot(meta: dict, verbose: bool) -> int:
           f"-> {meta['path']}")
     gaps = coverage["gaps"]
     mark = _mark(OK if not gaps else DEGRADED)
-    print(f"  {mark}  coverage {coverage['ok']}/{coverage['total']} facts verified")
+    print(f"  {mark}  coverage {coverage['ok']}/{coverage['total']} facts verified"
+          + _paint(f"  ({coverage['skipped']} of {coverage['possible']} probes "
+                   f"had nothing to check here)", "2")
+          if coverage.get("skipped") else
+          f"  {mark}  coverage {coverage['ok']}/{coverage['total']} facts verified")
 
     if gaps:
         detail = json.loads((Path(meta["path"]) / "coverage.json").read_text())
@@ -979,12 +991,23 @@ def cmd_prune(args: argparse.Namespace) -> int:
             print("Nothing was moved.")
             return 0
 
-    print("\nSnapshotting first…")
-    before = snapshot.capture(reason="before prune",
-                              message="before pruning previous-generation themes")
-    print(f"  {before['id']}")
+    # The same lock `restore` takes. Its docstring always claimed a restore
+    # racing a snapshot was unreconstructable; that only holds if both sides
+    # take it, and prune both snapshots and moves whole directories.
+    lock = restorer.Lock()
+    held = lock.acquire(break_stale=False)
+    if held:
+        print(f"error: {held}", file=sys.stderr)
+        return 2
+    try:
+        print("\nSnapshotting first…")
+        before = snapshot.capture(reason="before prune",
+                                  message="before pruning previous-generation themes")
+        print(f"  {before['id']}")
 
-    quarantine, moved, failures = pruner.run(plan)
+        quarantine, moved, failures = pruner.run(plan)
+    finally:
+        lock.release()
     print(f"\n  moved {len(moved)} item(s), {_bytes(sum(r.size for r in moved))}")
     for failure in failures:
         print("  " + _paint("FAILED ", "31") + failure)

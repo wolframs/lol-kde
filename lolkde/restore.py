@@ -429,7 +429,13 @@ def _json(path: Path):
 
 
 class Lock:
-    """A restore racing a snapshot is a state nobody can reconstruct."""
+    """A restore racing a snapshot is a state nobody can reconstruct.
+
+    That claim only holds if both sides take the lock. It used to be taken by
+    `restore` alone, so the protection it described did not exist for any
+    pairing except restore-against-restore; `cmd_prune` and `cmd_snapshot`
+    take it too now.
+    """
 
     def __init__(self, path: Path | None = None):
         self.path = path or (snapshot.store() / "lock")
@@ -440,19 +446,44 @@ class Lock:
             handle = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
             holder = self._holder()
-            if holder is not None and _pid_alive(holder) and not break_stale:
+            if holder is None:
+                # An unreadable or empty lock file is not an absent one. It is
+                # exactly what a process killed between O_CREAT and the pid
+                # write leaves behind, and it used to be deleted silently and
+                # retried -- so a second run would unlink a live run's lock and
+                # both would believe they held it. Refuse, and say what to do.
+                if not break_stale:
+                    return (f"lock file {self.path} exists but names no pid. "
+                            "Another run may be starting. If nothing else is "
+                            "running, pass --break-lock")
+            elif _pid_alive(holder) and not break_stale:
                 return (f"lock held by pid {holder} ({self.path}). "
                         "If that process is gone, pass --break-lock")
-            if holder is not None and not _pid_alive(holder) and not break_stale:
+            elif not _pid_alive(holder) and not break_stale:
                 return (f"lock held by pid {holder}, which is not running "
                         f"({self.path}). Pass --break-lock to take it")
             self.path.unlink(missing_ok=True)
             return self.acquire(break_stale=False)
         except OSError as exc:
             return str(exc)
-        with os.fdopen(handle, "w") as stream:
-            stream.write(str(os.getpid()))
+        # Write and flush the pid before anyone else can observe the file, so
+        # the window in which _holder() returns None is as small as possible.
+        try:
+            with os.fdopen(handle, "w") as stream:
+                stream.write(str(os.getpid()))
+                stream.flush()
+                os.fsync(stream.fileno())
+        except OSError as exc:
+            self.path.unlink(missing_ok=True)
+            return str(exc)
         return None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.release()
+        return False
 
     def release(self) -> None:
         if self._holder() == os.getpid():

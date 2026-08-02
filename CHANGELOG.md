@@ -12,6 +12,65 @@ Wolfram. Turn 1 is the first message after the context compaction on
 
 ---
 
+## Turn 15 — three reviews, and a README that is true
+
+### repo
+
+No machine changes. Three subagent reviews (store/install security, the
+destructive paths, and a fresh-eyes pass) found 20-odd items across three
+commits; 13 are fixed. **228 tests.**
+
+### Reports that were inaccurate
+
+Fixed because an inaccurate report sends whoever reads it — person or agent —
+after the wrong thing, which is its own cost even when no data moves.
+
+- `restore.Lock` took an **empty lock file** silently, which is exactly what a
+  process killed between `O_CREAT` and the pid write leaves behind. A second
+  run would unlink a live run's lock and both would believe they held it. Now
+  refused with `--break-lock` named. The pid is also written and fsynced
+  immediately, shrinking the window that produces the state at all.
+- The `Lock` docstring always claimed "a restore racing a snapshot is a state
+  nobody can reconstruct". Only `cmd_restore` took it, so that protection did
+  not exist for any pairing except restore-vs-restore. `cmd_prune` and
+  `cmd_snapshot` take it now.
+- `unpin()`'s failure path reported only the exception, reading as "nothing was
+  written" — while step 1 may already have pinned a value the user never had.
+  It now reports what the user layer actually holds and what it held before.
+- Snapshot coverage counted only probes that had something to check, so `8/8`
+  on a sparse machine looked identical to `13/13` here. `skipped` and
+  `possible` are carried alongside and printed when non-zero.
+
+### README
+
+It said **"Restore is designed but not built"** — false on all three clauses,
+and it was the only link the README offered to `ROADMAP.md` and
+`open-questions.md`. A reader met the feature section, then a paragraph saying
+the feature did not exist.
+
+Also corrected, each verified against the source rather than assumed:
+
+| claim | reality |
+|---|---|
+| `kdedefaults` "is re-derived by re-applying the look-and-feel package" | `plasma-apply-lookandfeel` appears nowhere in `restore.py` or `repair.py`. Restore replays into `~/.config` and reports `pin-lost`. Now says so, and names the command that does re-derive it |
+| `doctor` sample showing `3/6 ok` from four rows | seven components, and the `Repair:` block it always prints |
+| `kwinoutputconfig.json` as the `UNMANIFESTED` example | it is a manifest entry, so it can never appear there |
+| "six search paths" for icons | derived from `XDG_DATA_DIRS`, not a constant |
+| snapshots "~500 KB" | 653 KB mean across the 25 on this machine |
+| `prune` | undocumented entirely, despite moving gigabytes. Now has its own section |
+
+New: a **"Where this has actually been run"** section. Not a support boundary —
+a statement about evidence. One machine, Plasma 6.6.5 Wayland, Kvantum, one
+user; unit tests run anywhere, integration facts do not have that backing. It
+names the three things most likely to differ elsewhere (Qt plugin paths,
+English `kpackagetool6` parsing, Plasma 6.6-specific Aurorae repair) and says
+outright that those are guesses rather than observations.
+
+Verified mechanically afterwards: every verb and flag the README shows exists,
+no subcommand is undocumented.
+
+---
+
 ## Turn 14 — `please --dry-run` stops under-reporting
 
 ### repo

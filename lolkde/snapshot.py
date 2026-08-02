@@ -511,8 +511,14 @@ def capture(*, message: str = "", label: str = "", reason: str = "manual",
         "tool": _tool_version(),
         "files_captured": sum(1 for c in captured if c.get("status") == "captured"),
         "bytes": sum(c.get("size", 0) for c in captured if c.get("status") == "captured"),
+        # `total` counts only probes that had something to check, so a
+        # machine with fewer of them reports a *flattering* ratio -- `8/8` and
+        # `13/13` look identical while meaning very different things. Carry
+        # `skipped` alongside so the denominator can be read honestly.
         "coverage": {"ok": sum(1 for p in probes if p.status == "ok"),
                      "total": sum(1 for p in probes if p.status != "skipped"),
+                     "skipped": sum(1 for p in probes if p.status == "skipped"),
+                     "possible": len(probes),
                      "gaps": [p.probe for p in probes if p.status == "GAP"]},
         "applied_theme": state.get("applied_theme", ""),
         "warnings": inversions,
@@ -723,7 +729,9 @@ def _readme(meta: dict, probes: list[ProbeResult]) -> str:
         "",
         f"- applied global theme: `{meta['applied_theme'] or 'none'}`",
         f"- files captured: {meta['files_captured']} ({meta['bytes']} bytes)",
-        f"- coverage: {coverage['ok']}/{coverage['total']} facts verified",
+        f"- coverage: {coverage['ok']}/{coverage['total']} facts verified"
+        + (f" ({coverage['skipped']} of {coverage['possible']} probes had "
+           f"nothing to check on this machine)" if coverage.get("skipped") else ""),
         "",
         "`files/` is a byte-exact, path-preserving copy. `state/` is the",
         "interpretable version — what was applied, what resolved, what KWin",

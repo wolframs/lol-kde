@@ -283,8 +283,20 @@ def unpin(file: str, group: str, key: str, notify: bool = True) -> WriteResult:
     try:
         removed = _strip_key(path, group, key)
     except OSError as exc:
+        # Step 1 may already have pinned the inherited value. Reporting only
+        # the exception reads as "nothing was written", which is wrong -- the
+        # user layer can now hold a pin they did not have before, and neither
+        # `_verify` nor `changelog_row` looks at a FAILED step. Say what is
+        # actually in the file.
+        now = kconfig.get(path, group, key)
+        detail = str(exc)
+        if now != pinned:
+            was = f"{pinned!r}" if pinned is not None else "no entry"
+            detail += (f"; the user layer now holds {key}={now!r} where it had "
+                       f"{was} -- step 1 landed and step 2 did not. Re-run to "
+                       f"finish, or remove that line by hand")
         return WriteResult(file, group, key, inherited or "", FAILED,
-                           detail=str(exc))
+                           now or "", str(path), detail)
 
     after = kconfig.read_cascade(file).get((file, group), {}).get(key)
     layer = kconfig.origin(file, group, key)

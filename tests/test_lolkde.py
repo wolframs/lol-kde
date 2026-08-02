@@ -2499,5 +2499,93 @@ class TestWriteRefusesASymlinkedConfig(unittest.TestCase):
             self.assertEqual(real.read_text(), "[Icons]\nTheme=Papirus\n")
 
 
+class TestReportsThatWereInaccurate(unittest.TestCase):
+    """Three findings whose only symptom was a report that lied.
+
+    None lost data. All three would send whoever read them -- person or agent
+    -- after the wrong thing, which is its own kind of cost.
+    """
+
+    def test_an_empty_lock_file_is_not_silently_taken(self):
+        # Exactly what a process killed between O_CREAT and the pid write
+        # leaves behind. It used to be unlinked and retried, so a second run
+        # would delete a live run's lock and both would think they held it.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "lock"
+            path.write_text("")
+            held = restore.Lock(path).acquire()
+            self.assertIsNotNone(held)
+            self.assertIn("--break-lock", held)
+            self.assertEqual(path.read_text(), "")   # not stolen
+
+    def test_break_lock_still_takes_an_empty_lock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "lock"
+            path.write_text("")
+            self.assertIsNone(restore.Lock(path).acquire(break_stale=True))
+            self.assertEqual(path.read_text().strip(), str(os.getpid()))
+
+    def test_a_live_holder_is_still_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "lock"
+            path.write_text(str(os.getpid()))
+            held = restore.Lock(path).acquire()
+            self.assertIn(str(os.getpid()), held)
+
+    def test_prune_and_snapshot_take_the_lock_too(self):
+        # The Lock docstring claims a restore racing a snapshot is
+        # unreconstructable. That only holds if both sides take it; for a long
+        # time only cmd_restore did.
+        for handler in (cli.cmd_prune, cli.cmd_snapshot):
+            with self.subTest(handler=handler.__name__):
+                self.assertIn("Lock()", inspect.getsource(handler))
+
+    def test_unpin_reports_a_pin_its_failure_left_behind(self):
+        # Step 1 writes the inherited value through kwriteconfig6; if the raw
+        # edit then fails, the user layer holds a pin the user never had, and
+        # FAILED steps are skipped by both _verify and changelog_row.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / "config"
+            (config / "kdedefaults").mkdir(parents=True)
+            (config / "kdedefaults" / "kdeglobals").write_text(
+                "[Icons]\nTheme=Tela\n")
+            # Pinned to something else, so step 1 has a real write to do.
+            (config / "kdeglobals").write_text("[Icons]\nTheme=Breeze\n")
+
+            def pretend_written(*args, **kwargs):
+                # What kwriteconfig6 would have done in step 1.
+                (config / "kdeglobals").write_text("[Icons]\nTheme=Tela\n")
+                return repair.WriteResult("kdeglobals", "Icons", "Theme",
+                                          "Tela", repair.WROTE)
+
+            with unittest.mock.patch.object(paths, "config_home",
+                                            return_value=config), \
+                 unittest.mock.patch.object(repair, "write",
+                                            side_effect=pretend_written), \
+                 unittest.mock.patch.object(
+                     repair, "_strip_key",
+                     side_effect=OSError(28, "No space left on device")):
+                result = repair.unpin("kdeglobals", "Icons", "Theme",
+                                      notify=False)
+
+        self.assertEqual(result.outcome, repair.FAILED)
+        self.assertIn("No space left", result.detail)
+        self.assertIn("user layer now holds", result.detail)
+        self.assertIn("'Breeze'", result.detail)
+
+    def test_coverage_carries_what_it_could_not_check(self):
+        # `13/13` and `8/8` looked identical while meaning very different
+        # things, because skipped probes left the denominator.
+        with tempfile.TemporaryDirectory() as tmp:
+            with unittest.mock.patch.object(snapshot, "store",
+                                            return_value=Path(tmp)):
+                meta = snapshot.capture(message="coverage shape", with_sweep=False)
+        for field in ("ok", "total", "skipped", "possible"):
+            self.assertIn(field, meta["coverage"], field)
+        self.assertEqual(meta["coverage"]["possible"],
+                         meta["coverage"]["total"] + meta["coverage"]["skipped"])
+
+
 if __name__ == "__main__":
     unittest.main()

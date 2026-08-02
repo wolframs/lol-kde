@@ -35,7 +35,6 @@ first run as a test rather than a routine.
 
 | thing | why not | what to run |
 |---|---|---|
-| auto-snapshot inside `legacy --remove` | destructive, and the three removable packages are re-downloadable but not by this tool | `lol-kde legacy` first, then `--remove` |
 | `restore --apply` for **more than one component at once** | turn 9 exercised `--component icons`. A multi-component run, and one that hits `SET` rather than `UNPIN`, are still only covered by unit tests | pin two pointers by hand, restore both |
 | `restore` aborting mid-run | the `stop at first failure` path, exit code 3 and the three-line recovery message have never fired for real | make one step fail (e.g. chmod a config file read-only) and check the journal names where it stopped |
 
@@ -50,13 +49,19 @@ Cleared on turn 9 — all run for real against this desktop:
 - **auto-snapshot inside `install`** — `lol-kde install org.magpie.nostrum.desktop`,
   which also found a real bug (bare non-archive downloads) and took the theme
   from 2/6 to 4/6.
+- **`legacy --remove`** — the gate was tested by declining, then one package
+  (`Gently`) was deleted for real. Turn 11's `prune` then removed the rest,
+  and `lol-kde legacy` now reports nothing at all.
 
 ## Blocked
+
+`origin` (Forgejo, `the private mirror`) came back on turn 11 and both remotes
+are level. It goes down for maintenance periodically; when it does, push
+`github` and wait — do not re-point the remote and do not force.
 
 | thing | blocker |
 |---|---|
 | `contrast` KWin effect | root cause unknown; refuses to load with `contrastEnabled=true` |
-| pushing to `origin` (Forgejo) | the box at `the private mirror` is **down for hardware maintenance** (confirmed turn 8; turn 7 saw it as `No route to host`). `github` is current, **`origin` is behind by 2+ commits**. Not an auth problem — do not re-point the remote and do not force. Just push when it is back |
 | restore of tiers B and C | unchanged by turn 8. Kvantum needs the app restarted; `appletsrc` and the GTK/xsettingsd derived files are capture-only by design (`restore-design.md` §8) |
 
 Test C's answer forced a new mechanism rather than a smaller feature — see

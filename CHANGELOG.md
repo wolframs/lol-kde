@@ -12,6 +12,66 @@ Wolfram. Turn 1 is the first message after the context compaction on
 
 ---
 
+## Turn 13 — terminal translucency, and a blocker that was never a blocker
+
+### machine
+
+Backups: `~/.lol-kde/backups/20260802T182930Z/`.
+Snapshot before the `kwinrc` edit: `2026-08-02T18-31-41Z-846b` (13/13 facts).
+
+| what | change | revert |
+|---|---|---|
+| `~/.config/kitty/kitty.conf` | appended `background_opacity 0.85`, `background_blur 1`, `dynamic_background_opacity yes` | `cp ~/.lol-kde/backups/20260802T182930Z/kitty.conf ~/.config/kitty/kitty.conf` |
+| `~/.local/share/konsole/BreezeTranslucent.colorscheme` | **new** — Breeze with `Opacity=0.85`, `Blur=true` | `rm ~/.local/share/konsole/BreezeTranslucent.colorscheme` |
+| `~/.local/share/konsole/Translucent.profile` | **new** — `kubuntu.profile` verbatim plus `ColorScheme=BreezeTranslucent` | `rm ~/.local/share/konsole/Translucent.profile` |
+| `~/.config/konsolerc` | `[Desktop Entry] DefaultProfile=Translucent.profile` | `cp ~/.lol-kde/backups/20260802T182930Z/konsolerc ~/.config/konsolerc` |
+| `~/.config/kwinrc` | removed `[Plugins] contrastEnabled=true` | `kwriteconfig6 --file kwinrc --group Plugins --key contrastEnabled true` |
+
+Neither terminal change is visible yet — both need a fresh process, and one of
+the processes is this session's terminal. Logged in `docs/open-questions.md`
+rather than reported as done.
+
+### `kwriteconfig6` dropped a tombstone as a side effect
+
+Writing `DefaultProfile` rewrote `konsolerc` and silently discarded a
+`State[$d]` line that had been sitting in `[MainWindow]`. Nothing inherits
+`State` — there is no `konsolerc` in any lower layer on this machine — so the
+marker was shadowing nothing and the drop changes no resolved value. Recorded
+because it is the first time a KConfig write has been observed **removing** a
+tombstone rather than writing one.
+
+### The `contrast` effect does not exist
+
+`isEffectSupported contrast` returns false and `listOfEffects` names 53
+effects, none of them `contrast`; there is no plugin on disk. So the ROADMAP
+blocker was a Plasma 5 fossil being ignored, not an effect failing to load.
+Detail in `CLAUDE.md`; the row is off the ROADMAP.
+
+It was the only key in `[Plugins]`, which means every effect on this desktop —
+including the `blur` that translucency depends on — is running on its default.
+The group header is still there, empty: `repair.unpin()` removes lines, not
+sections. Known residue, documented in `docs/restore-design.md`.
+
+### Breeze's palette, recovered by measurement
+
+Konsole's built-in colour schemes are compiled into the binary, so there was no
+`Breeze.colorscheme` to copy for the translucent variant. The values were
+written from source knowledge and then **checked against the screenshot**
+Wolfram pasted: background sampled `(35,38,39)`, the prompt's bright green
+`(28,220,154)` — both exactly the expected Breeze entries. The same sample also
+turned up `(0,255,0)`, which is `kubuntu.profile`'s `CustomCursorColor`, and so
+independently confirmed which profile was active.
+
+### A correction
+
+Reported last turn that `DefaultProfile=kubuntu.profile` was a dangling
+pointer because `~/.local/share/konsole/` is empty. It is not — the profile
+lives at `/usr/share/konsole/kubuntu.profile` and resolves through
+`$XDG_DATA_DIRS`. Konsole was working exactly as configured. The profile
+change above is a preference, not a repair.
+
+---
+
 ## Turn 12 — the Slot icon themes
 
 ### machine

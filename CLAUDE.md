@@ -302,6 +302,57 @@ translucency at fractional display scale. This desktop runs at scale **1.2**
 and Dolphin is translucent, so that reading is wrong or conditional. Do not
 repeat it without re-deriving it.
 
+## Translucency is three independent systems, not one setting
+
+Asked on turn 13 as "is translucency being applied too selectively?". It is
+not selective — there are three owners and they do not talk to each other.
+
+| layer | owner | knob |
+|---|---|---|
+| window decoration | KWin + the Aurorae theme | alpha in the theme's SVG |
+| window background | the widget style (here Kvantum) | `translucent_windows` + `reduce_window_opacity` |
+| content view | **the application** | its own, per-app |
+
+The third one is the answer to "why is the frame translucent but the inside
+solid". Kate's editor, Dolphin's file list and Konsole's terminal display each
+paint an opaque background over the window background. **A widget style cannot
+reach into a view.** What Kvantum makes translucent is the chrome — menubar,
+toolbar, statusbar, sidebars, dialogs, menus, tooltips — and nothing else.
+
+Non-Qt apps (kitty) never see Kvantum at all; they get the decoration from
+KWin and everything inside from their own config. Konsole is Qt, but its
+terminal transparency lives in the **color scheme**, not the profile and not
+the widget style: `[General] Opacity` and `Blur` in a `.colorscheme` file.
+The profile only points at the scheme by name.
+
+Konsole's built-in schemes (`Breeze` and friends) are compiled into the
+binary — `/usr/share/konsole/` holds only what the distro added. To make a
+translucent copy you have to write the whole scheme out. The Breeze values
+were confirmed here by sampling a screenshot: background `35,38,39`,
+`Color2Intense` `28,220,154`, both exact.
+
+## KWin 6.6 has no `contrast` effect. It was not failing to load.
+
+Carried as a blocker for several sessions — "refuses to load with
+`contrastEnabled=true`, root cause unknown". The root cause is that the effect
+does not exist:
+
+    qdbus6 org.kde.KWin /Effects org.kde.kwin.Effects.listOfEffects   # 53 effects, no `contrast`
+    qdbus6 org.kde.KWin /Effects org.kde.kwin.Effects.isEffectSupported contrast   # false
+
+Nothing on disk either — no plugin, no `kwin_contrast_config.so`, while blur
+has both. The background-contrast effect was folded into blur upstream; blur's
+config module now offers only blur strength and noise strength.
+
+`contrastEnabled=true` was a Kubuntu 24.04 / Plasma 5 fossil in `[Plugins]`,
+and it was the **only** key in that group — every one of the 53 effects KWin
+actually has was running on its default, which is why `blur` was loaded and
+enabled without ever being named. Removed on turn 13.
+
+**The general check is worth keeping**: cross-reference every `*Enabled` key in
+`kwinrc [Plugins]` against `listOfEffects`. A key naming an effect KWin does
+not have is silently ignored, so it reads as a broken feature forever.
+
 ## KDE Store / OCS
 
 - Authors declare dependencies **in the description prose**, as pling links.

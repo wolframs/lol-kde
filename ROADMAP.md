@@ -61,8 +61,12 @@ are level. It goes down for maintenance periodically; when it does, push
 
 | thing | blocker |
 |---|---|
-| `contrast` KWin effect | root cause unknown; refuses to load with `contrastEnabled=true` |
 | restore of tiers B and C | unchanged by turn 8. Kvantum needs the app restarted; `appletsrc` and the GTK/xsettingsd derived files are capture-only by design (`restore-design.md` §8) |
+
+The **`contrast` KWin effect** row is gone as of turn 13. It was never a
+blocker: KWin 6.6 has no such effect, so `contrastEnabled=true` was a Plasma 5
+fossil being silently ignored rather than a feature failing to load. See
+`CLAUDE.md`. The key has been removed from `kwinrc`.
 
 Test C's answer forced a new mechanism rather than a smaller feature — see
 `docs/restore-design.md` §1a. The 2026-08-02 session-loss incident constrains

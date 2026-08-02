@@ -72,6 +72,18 @@ this repo and were surfaced by the incident postmortem:
 - `an unrelated systemd unit` restarts every ten seconds (`node` missing
   from the unit's `PATH`) and floods the journal
 
+## Opened by turn 13 — terminal translucency
+
+Both configs were written and both **parse**, but neither has been seen on
+screen: each needs a fresh process, and the kitty instance in question is the
+one this session is running inside.
+
+| claim | why it is not verified | settles it |
+|---|---|---|
+| kitty renders at `background_opacity 0.85` with blur | the running instance started before `dynamic_background_opacity yes` existed, so it cannot change opacity live — only a new process picks it up. Config *parsing* is confirmed: `kitty +runpy` with the user config returns `0.85 / 1 / True` | start a new kitty and look |
+| Konsole's `Translucent` profile renders translucent | new file; `konsole --list-profiles` sees it, but a rendered window has not been observed. `Blur=true` in the scheme depends on KWin's blur effect, which *is* loaded | open a new Konsole window |
+| `Opacity` in a `.colorscheme` is what Konsole actually reads | taken from the shipped `kubuntu-black.colorscheme`, which carries `Opacity=1`. Consistent, but only one sample | set `Opacity=0.5` briefly and look |
+
 ## Measurement caveats
 
 | claim | caveat |

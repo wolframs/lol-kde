@@ -69,6 +69,26 @@ outright that those are guesses rather than observations.
 Verified mechanically afterwards: every verb and flag the README shows exists,
 no subcommand is undocumented.
 
+### Then cut it in half
+
+518 lines -> **233**. `docs/` exists for the long version, so:
+
+| moved to | what |
+|---|---|
+| `docs/commands.md` (264) | the full per-command sections: restore, snapshot, diff, prune, please |
+| `docs/how-it-works.md` (128) | "things that are not obvious", installation internals, legacy metadata |
+
+What the README keeps is the pitch, the command list, one `doctor` sample, a
+five-bullet summary of why KDE theming needs a tool, the safety properties, the
+single-machine scope statement, and an index of everything else. Each of the
+five bullets links to the section that used to be inline.
+
+The tone is deliberate. The program exists because a Global Theme is a list of
+things you may not own and nothing in the desktop checks — so the README says
+"it should not need to exist" and then explains, at length, exactly why it
+does. Links re-checked after the move; command/flag coverage re-verified
+mechanically across both files.
+
 ---
 
 ## Turn 14 — `please --dry-run` stops under-reporting

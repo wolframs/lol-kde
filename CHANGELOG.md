@@ -24,8 +24,14 @@ Wolfram. Turn 1 is the first message after the context compaction on
 themes kept on turn 11, points at it. Named-but-in-use is still a refusal —
 naming a thing is permission, not an override.
 
-`~/.lol-kde/pruned/` now holds 899 MB across two batches. Nothing is deleted
-until that directory is removed, so `df` is unchanged.
+`~/.lol-kde/pruned/` held 899 MB across two batches, and Wolfram cleared it at
+the end of this turn: **`rm -rf ~/.lol-kde/pruned`**, 309 GB → 310 GB free.
+Both revert paths above are therefore **gone** — the 37 packages are now only
+recoverable by re-downloading them from the store.
+
+`snapshots/`, `restores/`, `checkpoints/` and `journal.jsonl` are siblings of
+`pruned/`, not children, so all 22 snapshots and the journal survived. Checked
+before running it rather than after.
 
 ### Icon themes are not Plasma-generation-specific
 

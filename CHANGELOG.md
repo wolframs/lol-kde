@@ -16,7 +16,7 @@ Wolfram. Turn 1 is the first message after the context compaction on
 
 ### repo
 
-No machine changes. **244 tests.**
+One machine change, at the end — see below. **264 tests.**
 
 Wolfram, reading the README: *"Wait, didn't we at some point discover that
 there's up to 10 things that can be bundled in a theme?"* Yes. The tool had
@@ -188,10 +188,43 @@ Ten is the count of keys naming something you must separately *install*, which
 is the thing this tool is about; the table now says so, and names
 `plasmashellrc [Shell] ShellPackage` as a component pointer not yet modelled.
 
+### The journal was 60% fiction
+
+The last thing before shelving this, and the one that mattered most for how
+the project gets used from here.
+
+The test suite wrote to the real `~/.lol-kde/journal.jsonl`. **39 of its 66
+entries were test noise** — `restore … snapshot=test-snapshot` rows naming
+`/tmp` directories that no longer existed. `lol-kde history` exists to answer
+"what has this tool done to my machine", it is the first thing anyone reads
+when a bug turns up months later, and it was mostly describing things that
+never happened.
+
+`snapshot.store()` already honoured `LOL_KDE_HOME`; nothing set it. The suite
+now sets it for the whole module, plus three guard tests: the store is not the
+user's, it is the temporary one, and the real journal contains no
+`test-snapshot` anywhere. The third catches a test that unsets the variable
+without restoring it, which the first two would miss.
+
+`LOL_KDE_HOME` is now documented in `docs/commands.md`, where it is also the
+honest way to try `prune --apply` without the attempt joining the record.
+
+### machine
+
+The 39 test entries were removed from the live journal. Provably fabricated —
+every one was `action=restore`, `snapshot=test-snapshot`, `directory` under
+`/tmp/tmp*` — and the single real `restore` entry (turn 9, `--component icons`
+against `2026-08-02T16-56-54Z-66f1`) was checked by hand and kept. 27 entries
+remain and all of them describe something that happened.
+
+| what | file | revert |
+|---|---|---|
+| dropped 39 test-suite entries | `~/.lol-kde/journal.jsonl` | `cp ~/.lol-kde/journal.jsonl.lolkde.bak ~/.lol-kde/journal.jsonl` |
+
 ### Revert
 
 ```sh
-git -C ~/Projects/lol-kde revert <sha>   # repo-only; nothing was written live
+git -C ~/Projects/lol-kde revert <sha>   # repo-only
 ```
 
 ---

@@ -48,6 +48,18 @@ Scope is the components this tool models. It is not a backup system, and a
 theme tool that half-implements one is more dangerous than one that declines
 to — for that, use Timeshift, btrfs snapshots or etckeeper.
 
+## `LOL_KDE_HOME`
+
+Everything this tool keeps about itself — snapshots, restore records, the
+quarantine, `journal.jsonl` — lives under `~/.lol-kde`. Set `LOL_KDE_HOME` to
+move it.
+
+Its main use is keeping a run out of your real history: the test suite sets it
+for the whole session, because without it every test that drives a mutating
+command appends to the journal you read when something breaks. It is also the
+honest way to try `prune --apply` or `restore --apply` without the attempt
+becoming part of the record.
+
 ## `lol-kde snapshot` — a capture that can tell when it failed
 
 A checkpoint is only as good as its file list, and a plausible-looking path can

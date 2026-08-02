@@ -25,6 +25,55 @@ from lolkde import (banner, catalog, cli, compare, install, journal,  # noqa: E4
                     kconfig, knsrc, legacy, manifest, paths, repair,
                     prune, resolve, restore, snapshot, store)
 
+# Where the tool keeps snapshots, restores and the journal during a test run.
+# Set for the whole module, because otherwise `snapshot.store()` falls through
+# to `~/.lol-kde` and the suite appends to the user's real journal.
+#
+# It did. 39 of the 66 entries in this machine's journal were test noise --
+# `restore … snapshot=test-snapshot` rows naming `/tmp` directories that no
+# longer existed. `lol-kde history` is the first thing anyone reads when a bug
+# turns up months later, and it was mostly fiction. Found 2026-08-03.
+_TEST_HOME: tempfile.TemporaryDirectory | None = None
+
+
+def setUpModule():
+    global _TEST_HOME
+    _TEST_HOME = tempfile.TemporaryDirectory(prefix="lolkde-test-home-")
+    os.environ["LOL_KDE_HOME"] = _TEST_HOME.name
+
+
+def tearDownModule():
+    global _TEST_HOME
+    os.environ.pop("LOL_KDE_HOME", None)
+    if _TEST_HOME is not None:
+        _TEST_HOME.cleanup()
+        _TEST_HOME = None
+
+
+class TestTheSuiteLeavesTheMachineAlone(unittest.TestCase):
+    """The suite must not write to the store a real run would use.
+
+    A guard, not a formality: every mutating command journals, most of the
+    destructive-path tests drive those commands, and nothing in the code says
+    "not the real one" -- only this fixture does.
+    """
+
+    def test_the_store_is_not_the_users(self):
+        self.assertNotEqual(snapshot.store(), paths.HOME / ".lol-kde")
+        self.assertNotEqual(journal.path(), paths.HOME / ".lol-kde/journal.jsonl")
+
+    def test_the_store_is_the_temporary_one(self):
+        self.assertIsNotNone(_TEST_HOME)
+        self.assertEqual(snapshot.store(), Path(_TEST_HOME.name))
+
+    def test_the_real_journal_gained_nothing(self):
+        # Belt and braces: a test that unsets LOL_KDE_HOME without restoring
+        # it would slip past the two assertions above.
+        real = paths.HOME / ".lol-kde/journal.jsonl"
+        if not real.is_file():
+            self.skipTest("no journal on this machine")
+        self.assertNotIn("test-snapshot", real.read_text(encoding="utf-8"))
+
 
 class TestManifestParsing(unittest.TestCase):
     def test_defaults_double_bracket_sections(self):

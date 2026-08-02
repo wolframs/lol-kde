@@ -1428,6 +1428,48 @@ class TestPrune(unittest.TestCase):
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertIn("skipped", again.stdout)
 
+    def test_drop_refuses_a_component_an_installed_theme_still_uses(self):
+        # Real case: Beauty-Color-Global-6 uses Slot-Dark-Icons, so naming
+        # the whole Slot family must drop four of five and refuse the fifth.
+        self._theme("Keeper", "KeeperStyle", icons="Wanted", modern_style=True)
+        (self.data / "icons" / "Unwanted").mkdir(parents=True)
+        with unittest.mock.patch.object(resolve, "live_settings",
+                                        return_value=self._live("Keeper")):
+            plan, refusals = prune.build_drop(["Wanted", "Unwanted"])
+        self.assertEqual([r.name for r in plan.remove], ["Unwanted"])
+        self.assertTrue(any("Wanted" in r and "Keeper" in r for r in refusals))
+
+    def test_drop_refuses_the_live_component(self):
+        self._theme("Keeper", "KeeperStyle", modern_style=True)
+        (self.data / "icons" / "LiveOnly").mkdir(parents=True)
+        live = self._live("Keeper")
+        live[("kdeglobals", "Icons")] = {"Theme": "LiveOnly"}
+        with unittest.mock.patch.object(resolve, "live_settings",
+                                        return_value=live):
+            plan, refusals = prune.build_drop(["LiveOnly"])
+        self.assertEqual(plan.remove, [])
+        self.assertTrue(any("in use" in r for r in refusals))
+
+    def test_drop_reports_a_name_that_does_not_exist(self):
+        self._theme("Keeper", "KeeperStyle", modern_style=True)
+        with unittest.mock.patch.object(resolve, "live_settings",
+                                        return_value=self._live("Keeper")):
+            plan, refusals = prune.build_drop(["NoSuchTheme"])
+        self.assertEqual(plan.remove, [])
+        self.assertTrue(any("not found" in r for r in refusals))
+
+    def test_drop_is_the_only_way_to_remove_unreferenced_content(self):
+        # build() must keep ignoring it -- "unreferenced" is not "unwanted",
+        # which is why Tela-dark survives next to the Tela in use.
+        self._theme("Keeper", "KeeperStyle", modern_style=True)
+        (self.data / "icons" / "Loose").mkdir(parents=True)
+        with unittest.mock.patch.object(resolve, "live_settings",
+                                        return_value=self._live("Keeper")):
+            swept = prune.build()
+            named, _ = prune.build_drop(["Loose"])
+        self.assertNotIn("Loose", {r.name for r in swept.remove})
+        self.assertIn("Loose", {r.name for r in named.remove})
+
     def test_the_colour_scheme_filename_is_not_its_identifier(self):
         # Sweet-Ambar-Blue lives in SweetAmbarBlue.colors; matching on the
         # filename alone would miss it and leave the file behind.

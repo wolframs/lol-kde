@@ -834,13 +834,25 @@ def _print_outcome(outcome) -> None:
 
 
 def cmd_prune(args: argparse.Namespace) -> int:
-    plan = pruner.build(include_orphan_styles=not args.keep_orphans)
-    if not plan.remove:
-        print("Nothing to prune. No previous-generation global themes found.")
-        return 0
+    refusals: list[str] = []
+    if args.drop:
+        names = [n.strip() for n in args.drop.split(",") if n.strip()]
+        plan, refusals = pruner.build_drop(names)
+        for refusal in refusals:
+            print(_paint("  refused  ", "33") + refusal)
+        if not plan.remove:
+            print("\nNothing to drop.")
+            return 2 if refusals else 0
+    else:
+        plan = pruner.build(include_orphan_styles=not args.keep_orphans)
+        if not plan.remove:
+            print("Nothing to prune. No previous-generation global themes found.")
+            return 0
 
     print(f"Applied theme: {plan.applied}  {_paint('(never removable)', '2')}")
-    print(f"Keeping {len(plan.kept_themes)}: {', '.join(plan.kept_themes)}\n")
+    if plan.kept_themes:
+        print(f"Keeping {len(plan.kept_themes)}: {', '.join(plan.kept_themes)}")
+    print()
 
     by_kind: dict[str, list] = {}
     for removal in plan.remove:
@@ -872,7 +884,8 @@ def cmd_prune(args: argparse.Namespace) -> int:
     print(f"\n  {len(plan.remove)} item(s), {_bytes(plan.bytes)} to reclaim")
     if not args.apply:
         print(_paint("\nNothing was moved. To do it:", "1"))
-        print("  lol-kde prune --apply")
+        print("  lol-kde prune --apply"
+              + (f" --drop {args.drop}" if args.drop else ""))
         return 0
 
     if not args.yes:
@@ -1045,6 +1058,10 @@ def build_parser() -> argparse.ArgumentParser:
     prn.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     prn.add_argument("--keep-orphans", action="store_true",
                      help="leave legacy Plasma styles that no theme references")
+    prn.add_argument("--drop", default="", metavar="NAME[,NAME...]",
+                     help="drop these components by name instead of sweeping "
+                          "generations. Still refuses anything in use or "
+                          "referenced by an installed theme")
     prn.set_defaults(func=cmd_prune)
 
     hist = sub.add_parser("history", help="what this tool has done to your machine")

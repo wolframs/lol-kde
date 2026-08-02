@@ -234,6 +234,74 @@ def build(include_orphan_styles: bool = True) -> Plan:
     return plan
 
 
+def referenced_by(name: str) -> list[str]:
+    """Which installed global themes point at this component, by any kind.
+
+    Includes system packages under `/usr`: they are not ours to remove, but
+    they are very much allowed to be using something.
+    """
+    holders = []
+    roots = [look_and_feel_dir()]
+    for directory in paths.data_dirs()[1:]:
+        roots.append(directory / "plasma/look-and-feel")
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for theme in sorted(root.iterdir()):
+            if not theme.is_dir():
+                continue
+            for _, (component, _) in components(theme).items():
+                if component == name and theme.name not in holders:
+                    holders.append(theme.name)
+    return holders
+
+
+def build_drop(names: list[str]) -> tuple[Plan, list[str]]:
+    """A plan for explicitly named components. Returns (plan, refusals).
+
+    This is the deliberate escape hatch from `build()`'s rule that anything
+    unreferenced is left alone. "Unreferenced" is not "unwanted" -- Tela-dark
+    sits next to the Tela in use -- so removing that content is a decision a
+    person makes by name, never one this program infers. What it still will
+    not do is drop something a surviving theme or the live configuration is
+    using; naming a thing is permission, not an override.
+    """
+    plan = Plan()
+    refusals: list[str] = []
+    live = resolve.live_settings()
+    plan.applied = (live.get(("kdeglobals", "KDE")) or {}).get(
+        "LookAndFeelPackage", "")
+
+    live_names = set()
+    for kind, (file, group, key) in POINTERS:
+        value = (live.get((file, group)) or {}).get(key, "").strip()
+        if value:
+            live_names.add(value.replace(resolve.AURORAE_PREFIX, ""))
+
+    for name in names:
+        found: list[tuple[str, Path]] = []
+        for kind, _ in POINTERS:
+            for path in locate(kind, name):
+                if path.exists() and not any(p == path for _, p in found):
+                    found.append((kind, path))
+        if not found:
+            refusals.append(f"{name}: not found in any user theme directory")
+            continue
+        if name in live_names:
+            refusals.append(f"{name}: currently in use")
+            continue
+        holders = referenced_by(name)
+        if holders:
+            refusals.append(f"{name}: referenced by {', '.join(holders)}")
+            continue
+        for kind, path in found:
+            plan.remove.append(Removal(kind, name, path, "named explicitly"))
+
+    for removal in plan.remove:
+        removal.size = _size(removal.path)
+    return plan, refusals
+
+
 def check(plan: Plan) -> list[str]:
     """Refuse anything that is not plainly this user's own theme content."""
     problems = []

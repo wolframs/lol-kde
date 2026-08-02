@@ -12,6 +12,51 @@ Wolfram. Turn 1 is the first message after the context compaction on
 
 ---
 
+## Turn 12 — the Slot icon themes
+
+### machine
+
+| what | change | revert |
+|---|---|---|
+| 4 icon themes dropped | `Slot-Beauty-Dark-Icons-V-2`, `Slot-Beauty-Light-Icons`, `Slot-Nord-Dark-Colorize-Icons`, `Slot-Spectrum-Dark-Icons` — **621 MB apparent, 786 MB on disk** | `~/.lol-kde/pruned/2026-08-02T18-00-07Z/RESTORE.md` |
+
+`Slot-Dark-Icons` was **refused**: `Beauty-Color-Global-6`, one of the modern
+themes kept on turn 11, points at it. Named-but-in-use is still a refusal —
+naming a thing is permission, not an override.
+
+`~/.lol-kde/pruned/` now holds 899 MB across two batches. Nothing is deleted
+until that directory is removed, so `df` is unchanged.
+
+### Icon themes are not Plasma-generation-specific
+
+Wolfram asked, and he is right. They are freedesktop `index.theme` packages
+with no Plasma version dependency; the only occurrences of "Plasma" across all
+25 installed themes are *comments* (`# KDE/Plasma Stuff`, "Icon(s) for Plasma
+theme/System Tray"). So none of that 1.8 GB was legacy in the sense turn 11
+was pruning, and `prune`'s refusal to touch it was correct.
+
+**Two size corrections.** The figure quoted during turn 11 was 1.6 GB, then
+1.8 GB — both from block-based `du` at different scopes. The honest pair is
+**1.2 GB apparent, 1.8 GB on disk**, and the 600 MB gap is block overhead
+across **532,023 inodes** (224,791 files + 307,232 symlinks). Icon themes are
+pathologically many tiny files, which is the same property that took a
+snapshot from 2.5 s to 11.3 s and forced the bounded walk.
+
+The Slot family alone was 781 MB and 221,227 files — two thirds of the total
+size and 42% of the inodes, across five themes, one of which is in use.
+
+### repo
+
+- `prune --drop NAME[,NAME...]` — the deliberate escape hatch from `build()`'s
+  rule that unreferenced content is left alone. It still refuses anything live
+  or referenced by an installed theme, including system packages under `/usr`.
+  A test asserts `build()` keeps ignoring what only `--drop` will take, so the
+  "unreferenced is not unwanted" rule cannot erode: `Tela-dark` sits next to
+  the `Tela` in use and must survive a generation sweep.
+- 170 → 174 tests.
+
+---
+
 ## Turn 11 — back to Layan, and the Plasma 5 sweep
 
 ### machine

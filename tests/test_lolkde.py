@@ -139,6 +139,35 @@ class TestAuroraePlugin(unittest.TestCase):
         self.assertEqual(repair.DECO_GROUP, "org.kde.kdecoration2")
 
 
+class TestKvantumOpaqueList(unittest.TestCase):
+    """Themes exclude specific executables from translucency by name.
+
+    Layan lists 19 -- vlc, VirtualBox, kdenlive and friends. Those apps
+    ignore reduce_window_opacity entirely, which looks like a broken theme
+    if you do not know the list exists.
+    """
+
+    def _cfg(self, body: str) -> Path:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "T.kvconfig"
+        path.write_text(body)
+        return path
+
+    def test_parses_and_strips_the_comma_list(self):
+        cfg = self._cfg("[%General]\nopaque=vlc, VirtualBox ,kdenlive\n")
+        self.assertEqual(resolve.kvantum_opaque_apps(cfg),
+                         ["vlc", "VirtualBox", "kdenlive"])
+
+    def test_absent_key_is_an_empty_list_not_an_error(self):
+        cfg = self._cfg("[%General]\ntranslucent_windows=true\n")
+        self.assertEqual(resolve.kvantum_opaque_apps(cfg), [])
+
+    def test_empty_value_yields_no_phantom_entries(self):
+        cfg = self._cfg("[%General]\nopaque=\n")
+        self.assertEqual(resolve.kvantum_opaque_apps(cfg), [])
+
+
 class TestAuroraeScaledVariants(unittest.TestCase):
     """_x1.25 and _x1.5 variants that scaled the art but not the layout."""
 

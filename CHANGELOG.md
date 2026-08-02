@@ -23,7 +23,14 @@ No changes.
 - `resolve.aurorae_scale_mismatch()` — flags `_x1.25` / `_x1.5` Aurorae
   variants whose `<theme>rc` is byte-identical to their unscaled sibling.
   Catches the five broken WhiteSur variants installed here, and nothing else.
-- 62 → 66 tests
+- `resolve.kvantum_opaque_apps()` — `doctor -v` now names the 17 executables
+  Layan excludes from translucency by name.
+- `cli._detail()` — multi-line details now indent their continuation lines.
+- 62 → 69 tests
+- `CLAUDE.md`: Kvantum's translucency is set before window creation via a
+  single `styleHint()` call, so minimal test apps never reproduce it; KWin's
+  Debug Console is a `QWidget` inside `kwin_wayland` whose surface has no
+  alpha channel; a KWin script can close it where D-Bus cannot.
 
 ---
 

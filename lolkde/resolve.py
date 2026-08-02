@@ -144,8 +144,27 @@ def widget_style(name: str, expect: str = "") -> Resolution:
                         r.detail += " (windows will be fully opaque)"
                 elif enabled is not None:
                     r.detail += f", translucent_windows={enabled}"
+                # Themes carry a per-executable opt-out. Layan lists 19 apps,
+                # mostly video players and VirtualBox, that stay opaque no
+                # matter what reduce_window_opacity says. Worth naming before
+                # someone spends an evening asking why VLC looks wrong.
+                opaque = kvantum_opaque_apps(cfg)
+                if opaque:
+                    r.detail += (f"\n{len(opaque)} apps opt out of translucency "
+                                 f"(theme's opaque= list): " + ", ".join(opaque))
                 break
     return r
+
+
+def kvantum_opaque_apps(kvconfig: Path) -> list[str]:
+    """Executables a Kvantum theme excludes from window translucency.
+
+    The theme's `opaque=` key is a comma-separated list of executable names.
+    Kvantum's own default is `kscreenlocker, wine`; themes extend it freely.
+    These apps ignore reduce_window_opacity entirely.
+    """
+    raw = kconfig.get(kvconfig, "%General", "opaque") or ""
+    return [app.strip() for app in raw.split(",") if app.strip()]
 
 
 def color_scheme(name: str) -> Resolution:

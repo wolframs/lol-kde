@@ -54,10 +54,21 @@ def _print_resolutions(results: list[resolve.Resolution], verbose: bool) -> tupl
         line = f"  {_mark(result.status)}  {result.label:<18} {result.value}"
         print(line)
         if result.detail and (result.status != OK or verbose):
-            print(f"{' ' * (4 + _MARK_WIDTH)}{_paint(result.detail, '2')}")
+            pad = ' ' * (4 + _MARK_WIDTH)
+            print(f"{pad}{_detail(result.detail, pad)}")
         if verbose and result.path:
             print(f"          {_paint(str(result.path), '2')}")
     return broken, degraded
+
+
+def _detail(text: str, indent: str) -> str:
+    """Indent a detail block, including its continuation lines.
+
+    Some details are lists long enough to need their own line -- Kvantum's
+    opaque= exclusions, for instance. Without this they hang off the left
+    margin and read as separate output.
+    """
+    return _paint(f"\n{indent}".join(text.splitlines()), "2")
 
 
 def _summary(broken: int, degraded: int, total: int) -> str:
@@ -86,7 +97,7 @@ def _print_audit(rows: list[resolve.AuditRow], verbose: bool) -> dict[str, int]:
         print(f"  {mark}  {row.label:<18} {value}")
         detail = row.note or (row.resolution.detail if row.resolution else "")
         if detail and (status != OK or drifted or verbose):
-            print(f"{indent}{_paint(detail, '2')}")
+            print(f"{indent}{_detail(detail, indent)}")
         if verbose and row.resolution and row.resolution.path:
             print(f"{indent}{_paint(str(row.resolution.path), '2')}")
     return counts
@@ -401,7 +412,8 @@ def cmd_install(args: argparse.Namespace) -> int:
         }[result.status]
         print(f"  {status_mark}  {dep.knsrc:<18} {name}")
         if result.detail:
-            print(f"{' ' * (4 + _MARK_WIDTH)}{_paint(result.detail, '2')}")
+            pad = ' ' * (4 + _MARK_WIDTH)
+            print(f"{pad}{_detail(result.detail, pad)}")
         if result.status == "failed":
             failures += 1
 

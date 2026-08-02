@@ -114,6 +114,35 @@ list and the model adds them as themselves.
   our edit, originally true/0) vs `Layan-solid` (false/0).
 - Kvantum themes are distributed on **GitHub, not the KDE Store**, so
   `lol-kde install` cannot fetch them.
+- **`opaque=` is a per-executable opt-out** in the theme's kvconfig. Layan lists
+  17 — vlc, VirtualBox, QtCreator, kdenlive, digikam, several video players.
+  Those ignore `reduce_window_opacity` entirely. `doctor -v` names them.
+  Kvantum's built-in default is `kscreenlocker, wine`.
+
+**Kvantum's translucency is timing-dependent, and that is why a test app will
+not reproduce it.** On Wayland a surface's alpha channel is fixed when the
+native window is created, so `WA_TranslucentBackground` must be set *before*
+that. Kvantum does it in `Style::setSurfaceFormat()`, called from exactly one
+place — `Style::styleHint()` — with the author's own comment
+`/* FIXME Why here and nowhere else? */`. Qt creates the native window before
+`ensurePolished()` runs (`qwidget.cpp`, `QWidgetPrivate::setVisible`), so
+`polish()` is already too late and Kvantum's fallback explicitly vetoes.
+
+A rich app (Dolphin: menus, toolbars, KXmlGuiWindow) triggers `styleHint()`
+many times during construction and gets translucency. A bare `QMainWindow`
+that is constructed and `show()`n does not — measured here as
+`WA_TranslucentBackground` unset, `alphaBufferSize()==0`, palette alpha 255,
+for `QWidget`, `QMainWindow` and `QDialog` alike. **A minimal reproducer is
+not a valid control for Kvantum behaviour.**
+
+`subApp_` is not a heuristic: it is literally
+`applicationName() == "Qt-subapplication"`. Kvantum has no desktop-file check.
+
+**Reported but contradicted by observation:** research surfaced a
+`nonIntegerScale` check in Kvantum's `ThemeConfig.cpp` said to disable window
+translucency at fractional display scale. This desktop runs at scale **1.2**
+and Dolphin is translucent, so that reading is wrong or conditional. Do not
+repeat it without re-deriving it.
 
 ## KDE Store / OCS
 
@@ -197,6 +226,35 @@ exactly the five broken variants installed here and nothing else.
 
 Fixing one properly means multiplying every `[Layout]` number by the same
 factor. Not done — nobody here uses these themes.
+
+## KWin's Debug Console
+
+`class DebugConsole : public QWidget`, constructed inside `kwin_wayland` by
+`DBusInterface::showDebugConsole()` and surfaced as an `InternalWindow`. Not
+GTK, not a separate process.
+
+It is opaque because KWin's QPA `Window::format()` returns a bare `m_format`
+that is never populated with an alpha channel, so `alphaBufferSize()` stays
+`-1` — and Kvantum's polish-time gate requires exactly `8`. An internal
+window can never satisfy it. QtQuick internals (Overview, task switcher) set
+their own surface alpha and bypass QStyle entirely, which is why *those* are
+translucent. Structural inference from both codebases, not a cited decision.
+
+**No D-Bus method closes it.** `showDebugConsole()` returns no handle,
+`killWindow()` needs an interactive click and no-ops on internal windows
+anyway (`InternalWindow::killWindow()` is an empty stub). See KDE Bug 502901.
+`InternalWindow::closeWindow()` *is* functional and reachable from a KWin
+script:
+
+```js
+for (const w of workspace.windowList())
+  if (w.caption && w.caption.indexOf("Debug Console") >= 0) w.closeWindow();
+```
+
+Written and run here, but it matched nothing — the console was already gone,
+so this route is **untested against a live console**. Also note
+`w.internal` is `undefined` in KWin 6 scripting, so it cannot be used to
+confirm whether `windowList()` includes internal windows at all.
 
 ## Measuring anything on screen under Wayland
 

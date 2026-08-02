@@ -12,6 +12,26 @@ Wolfram. Turn 1 is the first message after the context compaction on
 
 ---
 
+## Turn 7 — documentation pass, end of session
+
+### machine
+
+No changes.
+
+### repo
+
+- `CLAUDE.md` machine state refreshed (scale 1.25; the decoration `theme` key
+  is inherited, not pinned) and marked as a starting point rather than truth.
+- `docs/open-questions.md`: question B settled and marked so.
+- `ROADMAP.md`: new "built but not exercised end-to-end" section, and the
+  Forgejo push recorded as blocked on an unreachable host.
+
+**`origin` (Forgejo) is one or more commits behind.** `the private mirror` was
+unreachable at the end of this session. `github` is current. Push to `origin`
+when the box is back up; do not re-point remotes or force.
+
+---
+
 ## Turn 6 — snapshot / diff / history
 
 ### machine

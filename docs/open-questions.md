@@ -28,18 +28,17 @@ sleep 2 && grep -c 'Baz=2' ~/.config/kwinrc      # 1 => merge; 0 => clobber
 kwriteconfig6 --file kwinrc --group LolKdeProbe --key Baz --delete
 ```
 
-### B. Is the silent `kwriteconfig6` no-op real and observable?
+### ~~B. Is the silent `kwriteconfig6` no-op real and observable?~~ SETTLED
 
-**Believed answer: yes, already observed.** On 2026-08-02 `repair.aurorae_plugin()`
-wrote `theme=__aurorae__svg__Layan` into `~/.config/kwinrc`, exited 0, and wrote
-nothing — the value matched the inherited `kdedefaults` value. Re-confirm, then
-this row becomes a `CLAUDE.md` fact rather than a question.
+**Yes.** On 2026-08-02 `repair.aurorae_plugin()` wrote
+`theme=__aurorae__svg__Layan` into `~/.config/kwinrc`, exited 0, and wrote
+nothing — the value matched the inherited `kdedefaults` value. Confirmed by
+inspecting both layers: `~/.config/kwinrc` has `library` but no `theme`;
+`~/.config/kdedefaults/kwinrc` has both.
 
-```sh
-kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 \
-              --key theme __aurorae__svg__Layan; echo "exit=$?"
-grep -c '^theme=' ~/.config/kwinrc               # expect exit=0 and count=0
-```
+`repair.write()` now returns `WROTE` / `INHERITED` / `UNCHANGED` / `FAILED`
+from a two-level read-back. Recorded in `CLAUDE.md`. Kept here only because
+the restore design depends on it.
 
 ### C. Does `--delete` revert to the inherited value, or write a `[$d]` shadow?
 

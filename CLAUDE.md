@@ -186,15 +186,22 @@ They load, but plasmashell was observed aborting inside
 Aurorae decorations use `metadata.desktop` as their **normal** format — never
 flag those as legacy.
 
-## Machine state as of 2026-08-02
+## Machine state as of 2026-08-02 (end of turn 7)
+
+Do not trust this section blind — run `lol-kde doctor -v` and
+`lol-kde diff` first. It is a starting point, not a source of truth.
 
 - Applied: `com.github.vinceliuice.Layan`, `7/7 ok`
 - Kvantum: theme `Layan`, `reduce_window_opacity=15` (backup `.bak` has `0`)
 - Window translucency: **working**, confirmed visually
-- Decoration: `org.kde.kwin.aurorae.v2` / `__aurorae__svg__Layan`, written into
-  the `~/.config` user layer (backup: `~/.config/kwinrc.lolkde.bak`)
+- Decoration: `org.kde.kwin.aurorae.v2` pinned in `~/.config/kwinrc`;
+  `theme=__aurorae__svg__Layan` is *inherited* from `kdedefaults`, not pinned —
+  the write no-opped and that is fine (backup: `~/.config/kwinrc.lolkde.bak`)
+- Displays: two 2560x1440 at scale **1.25** (2048x1152 logical each, exact on
+  both axes), DP-2 at x=2048. `[Xwayland] Scale=1.25`
 - Compositor: `gl2`, NVIDIA, Wayland. Blur loaded; `contrast` refuses to load.
-- Xwayland scale 1.2 (fractional — expect soft edges on SVG decorations)
+- `~/.lol-kde/`: `snapshots/` (several, all 13/13 verified),
+  `journal.jsonl`, and the hand-made `checkpoints/turn5-*` including `GAP.md`
 
 ## Measuring SVG themes: use QSvgRenderer, nothing else
 

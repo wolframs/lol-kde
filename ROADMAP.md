@@ -42,12 +42,24 @@ problem it solves.
 | Patching Layan's `#g1000` | cosmetic log spam only, upstream's to fix | `CLAUDE.md` |
 | Fixing the `_x1.25` Aurorae variants | detected, not repaired; nobody here uses them | `CLAUDE.md` |
 
+## Built but not exercised end-to-end
+
+Written, unit-tested, and wired in — but never run for real, so treat the
+first run as a test rather than a routine.
+
+| thing | why not | what to run |
+|---|---|---|
+| auto-snapshot inside `apply` | re-applying a global theme carries the documented plasmashell crash in `KSvg::FrameSvg::mask()`, and the machine was in use | `lol-kde apply com.github.vinceliuice.Layan`, expect the snapshot line, then `7/7 ok` |
+| auto-snapshot inside `install` | needs a theme with missing dependencies | `lol-kde install <theme>` |
+| auto-snapshot inside `legacy --remove` | destructive; nothing needed removing | `lol-kde legacy` first, then `--remove` |
+
 ## Blocked
 
 | thing | blocker |
 |---|---|
 | `restore` | the three tests in `docs/open-questions.md` |
 | `contrast` KWin effect | root cause unknown; refuses to load with `contrastEnabled=true` |
+| pushing to `origin` (Forgejo) | `the private mirror` unreachable as of turn 7 — `No route to host`, 100% packet loss. `github` is current; **`origin` is behind**. Not an auth problem; do not re-point the remote or force anything, just retry when the box is up |
 
 ## Rules
 

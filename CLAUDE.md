@@ -4,6 +4,13 @@ Everything here was learned the expensive way in one session. Read it before
 theorising about KDE theming; most of it is not discoverable from documentation
 and several items cost hours.
 
+## Keep CHANGELOG.md current
+
+Every change to Wolfram's **live configuration** — not just repo commits —
+goes in `CHANGELOG.md` with the old value, the new value, the backup path and
+the exact revert command. Time is counted in **user turns**, not dates.
+Back up before writing; record the backup path in the same entry.
+
 ## Method rules (these matter more than the facts below)
 
 **Name the instrument.** If you measure something, state which tool produced the

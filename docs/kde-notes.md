@@ -13,10 +13,22 @@ automatically.
 ## KDE architecture facts
 
 **A Global Theme is a manifest of pointers, not a theme.** `contents/defaults`
-names up to ten components. If a name does not resolve, KDE substitutes a
-default silently — no error, no warning, nothing in System Settings.
+names up to ten *installable components*. If a name does not resolve, KDE
+substitutes a default silently — no error, no warning, nothing in System
+Settings.
 
-The ten, measured across all thirteen look-and-feel packages installed here:
+Ten is not the size of the file's vocabulary. `KLookAndFeelManager` in Plasma
+6.6.5 exposes twenty `set*` methods — `nm -D --defined-only
+libklookandfeel.so.6.6.5 | c++filt` — including six font setters,
+`setTitlebarLayout`, `setBorderSize`, `setWindowPlacement` and
+`setShellPackage`. Those are settings, not pointers to something you must own.
+The ten below are the keys that name an artifact that has to be installed
+separately, and are every such key found across the fourteen global themes
+here. `[kwinrc][Windows] RollOverDesktops` and the decoration's
+`ButtonsOnLeft`/`ButtonsOnRight` are excluded on that test, not because the
+applier ignores them — it honours the buttons via `setTitlebarLayout`.
+`plasmashellrc [Shell] ShellPackage` is a genuine component pointer this tool
+does not model yet.
 
 | declared as | component |
 |---|---|
@@ -32,15 +44,24 @@ The ten, measured across all thirteen look-and-feel packages installed here:
 | `[Wallpaper] Image` | wallpaper |
 
 The splash and the wallpaper are written as **bare** groups in every real
-manifest, never as `[ksplashrc][KSplash]` / `[plasmarc][Wallpaper]`.
+manifest, never as `[ksplashrc][KSplash]` / `[plasmarc][Wallpaper]`. A parser
+that keys a bare group as `(group, "")` therefore makes both components
+invisible to every consumer that looks them up by config file — which is how
+`check` went its entire existence without printing a single splash row.
 
 **KDE's own apply dialog splits these into two classes**, and the split is not
 cosmetic. "Appearance settings" — colours, application style, window
 decoration, icons, Plasma style, cursors, task switcher, splash — ships with
 every box ticked. "Layout settings: Desktop layout" ships **unticked**, and it
 is the one that replaces your panels, widgets, their arrangement and the
-wallpaper with the theme author's. On the command line that box is
-`plasma-apply-lookandfeel --resetLayout`.
+wallpaper with the theme author's. On the command line the equivalent is
+`plasma-apply-lookandfeel --resetLayout` ("Reset the Plasma Desktop layout").
+
+That equivalence is an **inference, not a measurement**. Both `kcm_lookandfeel`
+and `plasma-apply-lookandfeel` link `libklookandfeel.so.6` and both go through
+`KLookAndFeelManager::save(package, ContentFlags)`, which is the only caller of
+the `loadLookAndFeelDefaultLayout` D-Bus method — but nothing readable on disk
+shows the checkbox setting the same `ContentFlags` bit the flag sets.
 
 That is why the wallpaper is in the table but is not a pointer: its live value
 is not in `plasmarc` at all. It is a per-containment `file://` URL inside
@@ -55,44 +76,71 @@ Image=file:///home/…/.local/share/wallpapers/Layan
 
 **`[WindowSwitcher] LayoutName` is read from one group and written to another.**
 The look-and-feel applier reads `[kwinrc][WindowSwitcher] LayoutName` out of
-the manifest and writes `[kwinrc][TabBox] LayoutName`, which is the only one
-KWin reads. Auditing the declared group against the live config in that same
-group reports every applied switcher as `unset`, forever. No other pointer
-does this.
+the manifest and writes `[kwinrc][TabBox] LayoutName`. Auditing the declared
+group against the live config in that same group reports every applied switcher
+as `unset`, forever. No other pointer does this.
 
-**Nine of the thirteen themes here declare a task switcher that does not
-exist.** They all name `org.kde.breeze.desktop`, Kubuntu's own three included.
-Under Plasma 5 a `LayoutName` named a *look-and-feel* package, which supplied
-`contents/windowswitcher/WindowSwitcher.qml`. Plasma 6 moved switchers to their
-own KPackage type (`KWin/WindowSwitcher`, installed to
-`<data dir>/kwin/tabbox/<id>/`, sold as `kwinswitcher.knsrc`) and **no
-look-and-feel package on this machine ships a `windowswitcher/` directory any
-more** — Breeze included, which is why Breeze itself declares no switcher while
-every theme copied from a Plasma 5 template still does.
+Measured by disassembly rather than by looking at a live file: in
+`libklookandfeel.so.6.6.5`, `KLookAndFeelManager::packageContents()` references
+the literals `kwinrc/WindowSwitcher` and `LayoutName`, and
+`KLookAndFeelManager::setWindowSwitcher()` references exactly `kwinrc`,
+`TabBox` and `LayoutName`. A `[TabBox]` line in `~/.config/kdedefaults/kwinrc`
+would *not* have settled it on its own — KConfig writes are additive, so such a
+line can be residue from an earlier theme.
+
+`[TabBox]` is the group for the primary switcher; `kwin.kcfg` defines it, with
+default `thumbnail_grid`. KWin reads a second group, `[TabBoxAlternative]`, for
+the alternative switcher. The applier never writes it, so this tool does not
+model it.
+
+**Nine of the fourteen themes here declare a task switcher that resolves to
+nothing.** They all name `org.kde.breeze.desktop`, Kubuntu's own three
+included. Under Plasma 5 a `LayoutName` named a *look-and-feel* package, which
+supplied `contents/windowswitcher/WindowSwitcher.qml`.
+
+Plasma 6 **added** `KWin/WindowSwitcher` as its own KPackage type — sold as
+`kwinswitcher.knsrc`, `Uncompress=kpackage` — but it did **not** retire the old
+path. `libkwin.so.6` on 6.6.5 still carries the literal
+`plasma/look-and-feel/%1/contents/windowswitcher/WindowSwitcher.qml`, so a
+theme that ships the directory still works. What changed is the payload: **no
+look-and-feel package on this machine ships one any more**, Breeze included,
+which is why Breeze itself declares no switcher while every theme copied from a
+Plasma 5 template still does. KWin looks, finds nothing, falls back.
 
 ```
 $ kpackagetool6 --type KWin/WindowSwitcher --show org.kde.breeze.desktop
 Error: Can't find plugin metadata: org.kde.breeze.desktop
-$ kpackagetool6 --type KWin/WindowSwitcher --show big_icons
+$ kpackagetool6 --type KWin/WindowSwitcher --show big_icons   # abridged
   Name : Large Icons
   Path : /usr/share/kwin/tabbox/big_icons/
 ```
 
-`plasma-apply-lookandfeel` copies the dead id into `[TabBox] LayoutName`
-without checking, KWin cannot load it and uses its built-in switcher, and
-nothing anywhere says so. The user loses nothing — the built-in switcher is
-what the line was asking for — so this is not a fault, and `resolve.py` treats
-the stock Plasma 5 spellings as `ok`. The id is `KPlugin.Id` in the package's
-`metadata.json`, which is not obliged to match the directory name.
+`plasma-apply-lookandfeel` copies the id into `[TabBox] LayoutName` without
+checking, and nothing anywhere reports that it resolves to nothing. The user
+loses nothing — the built-in switcher is what the line was asking for — so this
+is not a fault, and `resolve.py` reports it `ok` with the explanation under
+`-v`. The id is `KPlugin.Id` in the package's `metadata.json`, which is not
+obliged to match the directory name.
+
+**`<data dir>/kwin/tabbox/` is not the whole search path.** It is where the
+store installs and where `kpackagetool6` looks, but `kwin-data` ships
+`thumbnail_grid` to `/usr/share/kwin-**wayland**/tabbox/`, and
+`/usr/share/config.kcfg/kwin.kcfg` names `thumbnail_grid` as the **default**
+value of `[TabBox] LayoutName`. `kpackagetool6 --show thumbnail_grid` cannot
+see it either. Globbing only `kwin/tabbox` made this tool report the stock
+default switcher as missing — the exact false alarm it exists to avoid.
 
 **`KWin/DesktopSwitcher` does not exist on Plasma 6.6 at all.** Not "no
 packages installed" — the package *structure* is unregistered:
 
 ```
-$ kpackagetool6 --type KWin/DesktopSwitcher --list
+$ kpackagetool6 --type KWin/DesktopSwitcher --list        # abridged; exits 0
 kf.package: Invalid metadata for package structure "KWin/DesktopSwitcher"
 Package type "KWin/DesktopSwitcher" not found
 ```
+
+`KLookAndFeelManager` has a `setWindowSwitcher` and no `setDesktopSwitcher`,
+which is the same finding from the other side.
 
 The applier drops the key rather than writing it anywhere, so there is no live
 value to compare against and nothing to install. A theme declaring it is

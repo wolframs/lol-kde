@@ -72,16 +72,22 @@ that and writes `[kwinrc][TabBox] LayoutName`, which is the only one KWin
 consults. No other pointer does this. Comparing the declared group against the
 live config in that same group reports every applied switcher as `unset`
 forever, so `lol-kde` keeps an explicit declared-to-live map
-(`resolve.LIVE_POINTERS`) and `restore` replays the key KWin reads.
+(`resolve.LIVE_POINTERS`) and `restore` replays the key KWin reads. Confirmed
+by disassembling `libklookandfeel.so.6.6.5`, not by reading a live config file:
+a `[TabBox]` line there can be residue from an earlier theme, because KConfig
+writes are additive.
 
 **Most themes declare a task switcher that does not exist, and that is fine.**
-Nine of the thirteen look-and-feel packages installed on the development
+Nine of the fourteen global themes installed on the development
 machine name `org.kde.breeze.desktop` here — Kubuntu's own three included.
 Under Plasma 5 that named a *look-and-feel* package, which shipped
-`contents/windowswitcher/WindowSwitcher.qml`; Plasma 6 moved switchers to their
-own KPackage type and no look-and-feel package carries the payload any more,
-Breeze included. `kpackagetool6 --type KWin/WindowSwitcher --show
-org.kde.breeze.desktop` answers "Can't find plugin metadata".
+`contents/windowswitcher/WindowSwitcher.qml`. Plasma 6 **added** a
+`KWin/WindowSwitcher` package type but did not retire that path — `libkwin.so.6`
+still carries the literal, so a theme shipping the directory still works. What
+changed is the payload: no look-and-feel package carries one any more, Breeze
+included. `kpackagetool6 --type KWin/WindowSwitcher --show
+org.kde.breeze.desktop` answers "Can't find plugin metadata", and KWin looks,
+finds nothing, and falls back.
 
 The applier copies the dead id anyway and KWin falls back to its built-in
 switcher — which is what the line was asking for, so nothing is lost.
@@ -103,7 +109,10 @@ theme into "Appearance settings" — colours, application style, window
 decoration, icons, Plasma style, cursors, task switcher, splash, every box
 ticked — and "Layout settings: Desktop layout", unticked. The second replaces
 your panels, widgets, their arrangement and the wallpaper with the theme
-author's. On the command line it is `plasma-apply-lookandfeel --resetLayout`.
+author's. On the command line the equivalent is `plasma-apply-lookandfeel
+--resetLayout` — an inference from both binaries linking `libklookandfeel.so.6`
+and routing through `KLookAndFeelManager::save(package, ContentFlags)`, not
+something any readable artifact states outright.
 
 `lol-kde` does not pass it and offers no flag that would. That is deliberate
 rather than an omission: it is the one part of applying a theme that no

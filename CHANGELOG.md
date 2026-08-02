@@ -16,12 +16,12 @@ Wolfram. Turn 1 is the first message after the context compaction on
 
 ### repo
 
-No machine changes. **241 tests.**
+No machine changes. **244 tests.**
 
 Wolfram, reading the README: *"Wait, didn't we at some point discover that
 there's up to 10 things that can be bundled in a theme?"* Yes. The tool had
 been describing seven since it was written, and enumerating every key across
-all thirteen look-and-feel packages on this machine found ten.
+all fourteen global themes on this machine found ten.
 
 The three it had never seen:
 
@@ -36,22 +36,24 @@ stays `prune`'s deliberately — see below.
 
 ### Three KDE facts, all measured
 
-- **Nine of the thirteen themes here declare a task switcher that does not
-  exist**, Kubuntu's own three included. They all name `org.kde.breeze.desktop`,
-  which was a Plasma 5 spelling for "the switcher inside that look-and-feel
-  package". Plasma 6 moved switchers to their own KPackage type and no
-  look-and-feel package ships `contents/windowswitcher/` any more — Breeze
-  included, which is why Breeze declares no switcher while every theme copied
-  from a Plasma 5 template still does. `kpackagetool6 --type
-  KWin/WindowSwitcher --show org.kde.breeze.desktop` → "Can't find plugin
-  metadata". `plasma-apply-lookandfeel` copies it into the live config anyway.
-  `~/.config/kdedefaults/kwinrc` on this machine holds one right now.
+- **Nine of the fourteen themes here declare a task switcher that resolves to
+  nothing**, Kubuntu's own three included. They all name
+  `org.kde.breeze.desktop`, a Plasma 5 spelling for "the switcher inside that
+  look-and-feel package". Plasma 6 added `KWin/WindowSwitcher` as its own
+  package type but did **not** retire that path — `libkwin.so.6` still carries
+  the `contents/windowswitcher/WindowSwitcher.qml` literal. What changed is the
+  payload: no look-and-feel package ships one any more, Breeze included, which
+  is why Breeze declares no switcher while every theme copied from a Plasma 5
+  template still does. KWin looks, finds nothing, falls back.
 - **The switcher is declared in one group and read from another.** The applier
   reads `[WindowSwitcher] LayoutName` from the manifest and writes
-  `[TabBox] LayoutName`, the only one KWin reads. No other pointer does this.
-  Auditing the declared group against live would have reported every applied
-  switcher `unset` forever, so `resolve.LIVE_POINTERS` maps declared → live and
-  `restore` replays the key KWin actually reads.
+  `[TabBox] LayoutName`. No other pointer does this. Auditing the declared
+  group against live would have reported every applied switcher `unset`
+  forever, so `resolve.LIVE_POINTERS` maps declared → live and `restore`
+  replays the key KWin actually reads. Established by disassembling
+  `libklookandfeel.so.6.6.5` — a `[TabBox]` line in `kdedefaults/kwinrc` proves
+  nothing on its own, because KConfig writes are additive and the line survives
+  the theme that wrote it.
 - **`KWin/DesktopSwitcher` is not a registered package structure on Plasma
   6.6.** Not "none installed" — the *type* is gone, and the applier drops the
   key. Never reported `unset`, because nothing could have set it.
@@ -99,7 +101,7 @@ under "Desktop layout" for the same reason.
 
 ### Then a review agent found five things, one of them serious
 
-Run at Wolfram's request against `0b78465..0d0486a`. **254 tests.**
+Run at Wolfram's request against `0b78465..0d0486a`. **261 tests.**
 
 - **`prune` could quarantine the task switcher the session is using.**
   `prune.POINTERS` holds the group a *manifest* declares each component in, and
@@ -137,6 +139,54 @@ One more, unprompted: the snapshot coverage probes were a hand-written list
 still commented "the seven pointers", so nothing proved `[TabBox] LayoutName`
 had been captured from its winning layer. Derived from `restore.components()`
 now. Coverage went from 13 facts to 16.
+
+### Then a fact-check agent refuted four claims and found two more bugs
+
+Run in parallel with the code review. Everything below was verified here before
+acting on it.
+
+Two more bugs, both pre-existing and both the same shape as the one that
+started the turn — a component invisible because of where it is looked up:
+
+- **`check` had never printed a splash row. Not for any theme, on any
+  machine.** Every real manifest writes `[KSplash]` bare, which
+  `parse_lookandfeel_defaults` keyed as `("KSplash", "")` while
+  `SIMPLE_POINTERS` expects `("ksplashrc", "KSplash")`. `prune` grew an alias
+  table for exactly this in turn 15; `resolve` never did. Fixed in the parser
+  instead of in each caller, so the next consumer cannot inherit the hole.
+- **The stock task switcher was reported `MISS`.** `kwin-data` ships
+  `thumbnail_grid` — which `kwin.kcfg` names as the *default* `[TabBox]
+  LayoutName` — to `/usr/share/kwin-**wayland**/tabbox/`, not `kwin/tabbox/`.
+  `kpackagetool6 --show` cannot see it either. Now globs `kwin*/tabbox`.
+
+Fixing the splash immediately surfaced a third: Kubuntu's themes declare
+`[KSplash] Theme=org.kde.Breeze` and the package on disk is
+`org.kde.breeze.desktop`, so the first honest splash row this tool ever printed
+was a false `MISS` advising that the boot splash would "fall back to Breeze" —
+which is what the theme had asked for. Package lookup is now tolerant of case
+and of the `.desktop` suffix.
+
+Four claims corrected rather than fixed:
+
+| claim | verdict |
+|---|---|
+| "thirteen look-and-feel packages" | **wrong** — `plasma-apply-lookandfeel --list` reports 14 global themes; there are 15 directories, and `Gently-Splash-6` is a `Plasma/LookAndFeel/Splash` package |
+| "Plasma 6 moved switchers to their own KPackage type" | **wrong, and it changes the meaning** — the type was *added*; `libkwin.so.6` still carries the look-and-feel lookup path, so a theme shipping the directory still works |
+| "`[TabBox]`, the only group KWin reads" | **over-claimed** — `[TabBoxAlternative]` exists; the applier never writes it |
+| "`--resetLayout` is the Desktop layout checkbox" | **over-claimed** — an inference from both binaries linking `libklookandfeel.so.6`; nothing readable states it |
+| CHANGELOG "241 tests" | **wrong** — `0d0486a` was 244 |
+
+The evidence for the `[WindowSwitcher]`→`[TabBox]` mapping was also replaced.
+The original — a `[TabBox]` line sitting in `kdedefaults/kwinrc` — was true when
+taken, since Layan was applied and Layan declares a switcher. But it does not
+*support* the claim, because KConfig writes are additive and such a line
+outlives the theme that wrote it. The disassembly does support it.
+
+`docs/kde-notes.md` also over-claimed the ten-component table as an enumeration
+of what a manifest can name. `KLookAndFeelManager` has twenty `set*` methods.
+Ten is the count of keys naming something you must separately *install*, which
+is the thing this tool is about; the table now says so, and names
+`plasmashellrc [Shell] ShellPackage` as a component pointer not yet modelled.
 
 ### Revert
 

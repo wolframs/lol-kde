@@ -147,7 +147,8 @@ Repair: lol-kde install Sweet-Ambar-Blue   # fetch missing pieces
         lol-kde apply Sweet-Ambar-Blue     # reset unset/drifted pointers
 ```
 
-Nine rows, one per pointer -- and ten things a `contents/defaults` can name.
+Nine pointers, and ten things a `contents/defaults` can name. A row appears
+only where a pointer is declared or live, so the printed count varies by theme.
 The number is computed from the pointer tables rather than written down,
 because it has now drifted twice: the banner said "six" while `apply` verified
 seven, and then "seven" while a manifest could name ten.
@@ -164,9 +165,11 @@ The two **switchers** are new as of 2026-08-03 and are worth knowing about:
   than the theme declares it in. `plasma-apply-lookandfeel` reads
   `[WindowSwitcher]` from the manifest and writes `[TabBox]`, which is the only
   one KWin reads. `doctor` compares against `[TabBox]`; `restore` replays it.
-- Nine of the thirteen themes installed here declare `org.kde.breeze.desktop`,
-  which resolves to no package at all -- it is a Plasma 5 spelling for the
-  stock switcher, and KWin's built-in one is exactly what it was asking for.
+- Nine of the fourteen themes installed here declare `org.kde.breeze.desktop`,
+  which resolves to no package at all -- it is a Plasma 5 spelling naming a
+  global theme, and KWin still looks inside one for a `windowswitcher/`
+  directory. None ship it any more, so KWin's built-in switcher is what you
+  get, which is exactly what the line was asking for.
   Reported `ok`, with the explanation under `-v`. A name that is neither a
   stock spelling nor an installed layout reports `MISS`, and is fetchable:
   `kwinswitcher.knsrc`.

@@ -618,7 +618,7 @@ class TestSwitchers(unittest.TestCase):
     """The two pointers no version of this tool saw until 2026-08-03.
 
     Measured on the machine in README's "where this has actually been run":
-    nine of thirteen installed look-and-feel packages declare
+    nine of fourteen installed global themes declare
     `[kwinrc][WindowSwitcher] LayoutName=org.kde.breeze.desktop`, Kubuntu's own
     three included, and `kpackagetool6 --type KWin/WindowSwitcher --show
     org.kde.breeze.desktop` answers "Can't find plugin metadata".
@@ -626,12 +626,78 @@ class TestSwitchers(unittest.TestCase):
 
     def test_a_stock_plasma5_spelling_is_not_a_fault(self):
         # Every theme built from a Plasma 5 template carries this line. KWin
-        # falls back to its built-in switcher, which is what the line asks for.
+        # looks inside the named global theme, finds no windowswitcher/, and
+        # uses its built-in switcher -- which is what the line asks for.
         # Reporting it MISS would put a permanent red mark on almost every
         # theme in the store for something the user cannot fix and has not lost.
-        for name in resolve.STOCK_SWITCHERS:
+        for name in ("org.kde.breeze.desktop", "org.kde.breezedark.desktop"):
+            if resolve._search("plasma/look-and-feel", name) is None:
+                self.skipTest(f"{name} is not installed here")
             self.assertEqual(resolve.window_switcher(name).status, resolve.OK, name)
             self.assertEqual(resolve.desktop_switcher(name).status, resolve.OK, name)
+
+    def test_a_theme_that_actually_ships_a_switcher_resolves_to_the_qml(self):
+        # KWin has NOT dropped the look-and-feel lookup -- libkwin.so.6 still
+        # carries the `plasma/look-and-feel/%1/contents/windowswitcher/
+        # WindowSwitcher.qml` literal on 6.6.5. A theme shipping the directory
+        # still works, so it must not be lumped in with the ones that do not.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            qml = root / "plasma/look-and-feel/Shipping" / resolve.LNF_SWITCHER
+            qml.parent.mkdir(parents=True)
+            qml.write_text("import QtQuick\n")
+            (root / "plasma/look-and-feel/Empty").mkdir(parents=True)
+            with unittest.mock.patch.object(paths, "data_dirs",
+                                            return_value=[root]):
+                shipping = resolve.window_switcher("Shipping")
+                empty = resolve.window_switcher("Empty")
+        self.assertEqual(shipping.status, resolve.OK)
+        self.assertEqual(shipping.path, qml)
+        self.assertEqual(shipping.detail, "")
+        self.assertEqual(empty.status, resolve.OK)
+        self.assertIn("built-in switcher", empty.detail)
+
+    def test_a_theme_may_spell_a_package_name_differently(self):
+        # Kubuntu's themes declare `[KSplash] Theme=org.kde.Breeze`; the
+        # package on disk is `org.kde.breeze.desktop`. An exact match reported
+        # the stock Breeze splash as not installed, and advised that the boot
+        # splash would "fall back to Breeze" -- which is what the theme asked
+        # for. Surfaced the moment the splash pointer became visible at all.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "plasma/look-and-feel/org.kde.breeze.desktop").mkdir(parents=True)
+            with unittest.mock.patch.object(paths, "data_dirs",
+                                            return_value=[root]):
+                for spelling in ("org.kde.breeze.desktop", "org.kde.Breeze",
+                                 "ORG.KDE.BREEZE.DESKTOP"):
+                    self.assertEqual(resolve.splash(spelling).status,
+                                     resolve.OK, spelling)
+                self.assertEqual(resolve.splash("org.kde.Nonesuch").status,
+                                 resolve.MISSING)
+
+    def test_the_kwin_default_switcher_resolves(self):
+        # `/usr/share/config.kcfg/kwin.kcfg` names `thumbnail_grid` as the
+        # default `[TabBox] LayoutName`, and `kwin-data` ships it to
+        # `/usr/share/kwin-wayland/tabbox/` -- not `kwin/tabbox/`. Globbing
+        # only the latter reported the stock switcher MISS, which is the exact
+        # false alarm this tool exists to avoid. Found by review 2026-08-03.
+        layouts = resolve.tabbox_layouts()
+        if "thumbnail_grid" not in layouts:
+            self.skipTest("kwin-data does not ship thumbnail_grid here")
+        self.assertEqual(resolve.window_switcher("thumbnail_grid").status,
+                         resolve.OK)
+
+    def test_layouts_are_found_outside_the_plain_kwin_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for base, name in (("kwin", "from_kwin"),
+                               ("kwin-wayland", "from_wayland"),
+                               ("kwin-x11", "from_x11")):
+                (root / base / "tabbox" / name).mkdir(parents=True)
+            with unittest.mock.patch.object(paths, "data_dirs",
+                                            return_value=[root]):
+                self.assertEqual(sorted(resolve.tabbox_layouts()),
+                                 ["from_kwin", "from_wayland", "from_x11"])
 
     def test_an_unknown_layout_is_missing(self):
         r = resolve.window_switcher("no-such-switcher-layout")
@@ -2621,6 +2687,45 @@ class TestPruneCanSeeEveryPointer(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             theme = self._theme(Path(tmp), "T", "[KSplash]\nTheme=org.kde.Breeze\n")
             self.assertEqual(prune.components(theme)["splash"][0], "org.kde.Breeze")
+
+    def test_every_consumer_sees_a_bare_group_not_just_prune(self):
+        # `prune` grew an alias table for bare groups in 2026-08-02; `resolve`
+        # did not, so `check` never printed a splash row for any theme on any
+        # machine -- every real manifest writes `[KSplash]` bare. Fixed in the
+        # parser so the next consumer cannot inherit the same hole.
+        # Found by review 2026-08-03.
+        with tempfile.TemporaryDirectory() as tmp:
+            theme = self._theme(Path(tmp), "T",
+                                "[KSplash]\nTheme=org.kde.Breeze\n"
+                                "\n[Wallpaper]\nImage=Scenery\n")
+            parsed = kconfig.parse_lookandfeel_defaults(theme / "contents/defaults")
+        self.assertEqual(parsed[("ksplashrc", "KSplash")]["Theme"], "org.kde.Breeze")
+        self.assertEqual(parsed[("plasmarc", "Wallpaper")]["Image"], "Scenery")
+        self.assertIn("Splash screen",
+                      [r.label for r in resolve.resolve_settings(parsed)])
+
+    def test_an_explicit_qualified_group_beats_the_bare_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            theme = self._theme(Path(tmp), "T",
+                                "[ksplashrc][KSplash]\nTheme=Explicit\n"
+                                "\n[KSplash]\nTheme=Bare\n")
+            parsed = kconfig.parse_lookandfeel_defaults(theme / "contents/defaults")
+        self.assertEqual(parsed[("ksplashrc", "KSplash")]["Theme"], "Explicit")
+
+    def test_every_installed_theme_that_declares_a_splash_now_shows_one(self):
+        root = Path("/usr/share/plasma/look-and-feel")
+        if not root.is_dir():
+            self.skipTest("no system look-and-feel packages")
+        checked = 0
+        for theme in sorted(p for p in root.iterdir() if p.is_dir()):
+            parsed = kconfig.parse_lookandfeel_defaults(theme / "contents/defaults")
+            if not parsed.get(("ksplashrc", "KSplash"), {}).get("Theme"):
+                continue
+            checked += 1
+            self.assertIn("Splash screen",
+                          [r.label for r in resolve.resolve_settings(parsed)],
+                          theme.name)
+        self.assertTrue(checked, "no system theme declares a splash")
 
     def test_the_qualified_form_still_works(self):
         with tempfile.TemporaryDirectory() as tmp:

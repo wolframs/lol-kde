@@ -148,6 +148,22 @@ def get(path: Path, group: str, key: str) -> str | None:
         return None
 
 
+# Groups every real `contents/defaults` writes **bare** -- `[KSplash]`, not
+# `[ksplashrc][KSplash]` -- mapped to the config file they belong to.
+#
+# Without this a bare group parses as `("KSplash", "")`, which matches no
+# pointer key, and the component vanishes from every consumer. `prune` grew its
+# own alias table for it in 2026-08-02; `resolve` did not, so `check` has never
+# once printed a splash row -- not for any theme, on any machine. Measured on
+# 2026-08-03: `org.kubuntu.desktop` declares `[KSplash] Theme=org.kde.Breeze`
+# and `check` reported `8/8 ok` without mentioning it. Fixed here rather than
+# in each caller, because the next consumer would have had the same hole.
+BARE_GROUPS = {
+    "KSplash": "ksplashrc",
+    "Wallpaper": "plasmarc",
+}
+
+
 def parse_lookandfeel_defaults(path: Path) -> dict[tuple[str, str], dict[str, str]]:
     """Parse a look-and-feel `contents/defaults` file.
 
@@ -155,7 +171,8 @@ def parse_lookandfeel_defaults(path: Path) -> dict[tuple[str, str], dict[str, st
     followed by a group. configparser reads that as the literal section name
     `kdeglobals][KDE`, which we split back apart.
 
-    Returns {(config_file, group): {key: value}}.
+    A bare `[KSplash]` is returned under the file it belongs to, so callers see
+    one shape rather than two. Returns {(config_file, group): {key: value}}.
     """
     parser = read_ini(path)
     out: dict[tuple[str, str], dict[str, str]] = {}
@@ -164,6 +181,14 @@ def parse_lookandfeel_defaults(path: Path) -> dict[tuple[str, str], dict[str, st
         if len(parts) == 2:
             config_file, group = parts[0].strip("[]"), parts[1].strip("[]")
         else:
-            config_file, group = section.strip("[]"), ""
-        out[(config_file, group)] = {k: v.strip() for k, v in parser.items(section)}
+            group = section.strip("[]")
+            config_file = BARE_GROUPS.get(group, group)
+            if config_file == group:
+                group = ""
+        values = {k: v.strip() for k, v in parser.items(section)}
+        # A file may carry both spellings; the qualified one is explicit, so
+        # it wins rather than being silently overwritten by the bare one.
+        out.setdefault((config_file, group), {}).update(
+            {k: v for k, v in values.items()
+             if k not in out.get((config_file, group), {})})
     return out

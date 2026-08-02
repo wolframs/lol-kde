@@ -130,11 +130,13 @@ Repair: lol-kde install Sweet-Ambar-Blue   # fetch missing pieces
 | `warn` | present, but will not render as intended (usually Kvantum) |
 | `MISS` | the configured value names something not installed; KDE is silently falling back |
 
-`9/9 ok` means the metadata agrees with itself. It is **not** evidence that
-anything is visible on your screen. When this tool says everything is fine and
-your desktop disagrees, your desktop is right.
+A row appears only for a pointer that is declared or live, so the count varies
+by theme — up to nine. Whatever it says, `n/n ok` means the metadata agrees
+with itself. It is **not** evidence that anything is visible on your screen.
+When this tool says everything is fine and your desktop disagrees, your desktop
+is right.
 
-Nine rows, ten declarable components. The tenth is the wallpaper, and it is
+Nine pointers, ten declarable components. The tenth is the wallpaper, and it is
 `prune`'s rather than `doctor`'s — see below.
 
 ## Why this needs a tool at all
@@ -151,13 +153,14 @@ Nothing about KDE theming is one thing.
   the half that no longer has any themes in it. KWin loads your decoration
   anyway, so it looks right — while System Settings shows nothing selected,
   which looks exactly like "window decorations are broken on this machine".
-- **Nine of the thirteen themes installed here declare a task switcher that
-  does not exist.** They all name `org.kde.breeze.desktop`, which was a Plasma 5
-  spelling; Plasma 6 moved switchers to their own package type and Breeze
-  stopped shipping one. `plasma-apply-lookandfeel` copies the dead name into
-  your config anyway, and — this is the good part — it copies it into a
-  *different group* than the one the theme declared it in. Nothing reports any
-  of this, and nothing is actually wrong. Kubuntu's own three themes do it too.
+- **Nine of the fourteen themes installed here declare a task switcher that
+  resolves to nothing.** They all name `org.kde.breeze.desktop`, a Plasma 5
+  spelling for "the switcher inside that global theme" — KWin still looks
+  there, but no theme ships one any more, Breeze included.
+  `plasma-apply-lookandfeel` copies the name into your config regardless, and —
+  this is the good part — it copies it into a *different group* than the one
+  the theme declared it in. Nothing reports any of this, and nothing is
+  actually wrong. Kubuntu's own three themes do it too.
 - **`kwriteconfig6` can exit 0 and write nothing**, when the value already
   matches an inherited default. Indistinguishable from a failed write.
 - **`kwriteconfig6 --delete` does not delete.** It writes a `Key[$d]` tombstone

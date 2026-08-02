@@ -106,7 +106,7 @@ one this session is running inside.
 
 ## Settled on turn 16 — a `contents/defaults` names ten things, not seven
 
-Enumerating every key across all thirteen look-and-feel packages installed here
+Enumerating every key across all fourteen global themes installed here
 found three the tool had never modelled: the task switcher, the desktop
 switcher and the wallpaper. The measurements are in
 [`kde-notes.md`](kde-notes.md); the design consequences are in
@@ -124,7 +124,9 @@ What is still open about them:
 |---|---|---|
 | a real third-party switcher layout installs correctly from `kwinswitcher.knsrc` | no theme on this machine names one, so the `Uncompress=kpackage` path for `KWin/WindowSwitcher` has never run | `lol-kde install` a theme that declares a store-hosted switcher |
 | KWin falls back *silently* when `[TabBox] LayoutName` names nothing | inferred from the id resolving to no package while the switcher visibly works; no KWin log line was read | `journalctl --user -u plasma-kwin_wayland` while setting a junk `LayoutName` on a disposable session |
-| `[DesktopSwitcher] LayoutName` is dropped rather than written somewhere unexamined | only `[TabBox]` was checked in `kdedefaults/kwinrc` after an apply | diff the whole `kdedefaults` tree across one `plasma-apply-lookandfeel` run |
+| `[DesktopSwitcher] LayoutName` is dropped rather than written somewhere unexamined | `KLookAndFeelManager` has no `setDesktopSwitcher`, which is strong but is absence-of-evidence | diff the whole `kdedefaults` tree across one `plasma-apply-lookandfeel` run |
+| the "Desktop layout" checkbox sets the same `ContentFlags` bit as `--resetLayout` | both binaries link `libklookandfeel.so.6` and route through `save(package, ContentFlags)`, but no readable artifact maps the checkbox to the bit | read the KCM source, or watch `appletsrc` across one ticked and one unticked apply on a disposable session |
+| `plasmashellrc [Shell] ShellPackage` is a component pointer worth modelling | `KLookAndFeelManager::setShellPackage` exists; no theme installed here declares it | find a theme that does, and see whether the package must be installed separately |
 
 ## Measurement caveats
 

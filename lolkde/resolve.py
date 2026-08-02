@@ -370,12 +370,39 @@ def look_and_feel(name: str) -> Resolution:
     return r
 
 
+def _look_and_feel_package(name: str) -> Path | None:
+    """Find a look-and-feel package, tolerating how themes spell each other.
+
+    Exact first, then case-insensitively, then with the `.desktop` suffix the
+    package directories carry and manifests often omit. Kubuntu's themes
+    declare `[KSplash] Theme=org.kde.Breeze`, and the package on disk is
+    `org.kde.breeze.desktop` -- an exact match reported the stock Breeze splash
+    as not installed, with the advice that the boot splash would "fall back to
+    Breeze", which is what the theme had asked for. Found on 2026-08-03, the
+    moment the splash pointer became visible at all.
+    """
+    if not name:
+        return None
+    hit = _search("plasma/look-and-feel", name)
+    if hit:
+        return hit
+    key = name.lower().removesuffix(".desktop")
+    for base in paths.data_dirs():
+        directory = base / "plasma/look-and-feel"
+        if not directory.is_dir():
+            continue
+        for package in sorted(p for p in directory.iterdir() if p.is_dir()):
+            if package.name.lower().removesuffix(".desktop") == key:
+                return package
+    return None
+
+
 def splash(name: str) -> Resolution:
     r = Resolution("splash", "Splash screen", name, MISSING)
-    if not name or name in ("None", "org.kde.breeze.desktop"):
+    if not name or name == "None":
         r.status = OK
         return r
-    hit = _search("plasma/look-and-feel", name)
+    hit = _look_and_feel_package(name)
     if hit:
         r.status, r.path = OK, hit
     else:
@@ -383,24 +410,33 @@ def splash(name: str) -> Resolution:
     return r
 
 
-# A task switcher layout is a KPackage of type `KWin/WindowSwitcher`, installed
-# to `<data dir>/kwin/tabbox/<id>/` and served by the store as
-# `kwinswitcher.knsrc`. The id is `KPlugin.Id` in the package's metadata.json,
-# which is not obliged to match the directory name.
-TABBOX_SUBDIR = "kwin/tabbox"
+# A task switcher layout is a KPackage of type `KWin/WindowSwitcher`, served by
+# the store as `kwinswitcher.knsrc`. The id is `KPlugin.Id` in the package's
+# metadata.json, which is not obliged to match the directory name.
+#
+# `<data dir>/kwin/tabbox/` is where the store installs them and where
+# `kpackagetool6` looks -- but it is NOT the whole story, and assuming it was
+# made this tool report the *default* switcher as missing. `kwin-data` ships
+# `thumbnail_grid` to `/usr/share/kwin-wayland/tabbox/`, and
+# `/usr/share/config.kcfg/kwin.kcfg` names `thumbnail_grid` as the default
+# value of `[TabBox] LayoutName`. `kpackagetool6 --show thumbnail_grid` cannot
+# see it either. So the glob covers every `kwin*/tabbox` under every data dir,
+# which picks up the x11 split too if a machine has one.
+TABBOX_GLOB = "kwin*/tabbox"
 
-# Plasma 5 named the stock switcher after the look-and-feel package that
-# supplied it -- `contents/windowswitcher/WindowSwitcher.qml` lived inside the
-# global theme. Plasma 6 moved switchers to their own KPackage type and no
-# look-and-feel package carries the payload any more, so these names resolve to
-# nothing and KWin uses its built-in switcher. That *is* the stock switcher,
-# which is what they were asking for, so it is not a fault.
-STOCK_SWITCHERS = {
-    "org.kde.breeze.desktop",
-    "org.kde.breezedark.desktop",
-    "org.kde.breezetwilight.desktop",
-    "org.kde.oxygen",
-}
+# Where a look-and-feel package would keep a switcher of its own. KWin still
+# looks here -- `libkwin.so.6` carries the literal
+# `plasma/look-and-feel/%1/contents/windowswitcher/WindowSwitcher.qml` on
+# 6.6.5, checked by `strings` on 2026-08-03. What changed in Plasma 6 is the
+# *payload*, not the lookup: no look-and-feel package on this machine ships the
+# directory any more, Breeze included. So a name like `org.kde.breeze.desktop`
+# is not a dead spelling KWin ignores -- KWin looks, finds nothing, and falls
+# back to its built-in switcher.
+#
+# An earlier version of this comment said Plasma 6 "moved switchers to their
+# own KPackage type", which implied the old path was gone. It is not, and a
+# theme that ships the directory still works.
+LNF_SWITCHER = "contents/windowswitcher/WindowSwitcher.qml"
 
 
 def _tabbox_id(package: Path) -> str:
@@ -422,26 +458,33 @@ def tabbox_layouts() -> dict[str, Path]:
     """Every installed task-switcher layout, by plugin id, most-specific first."""
     found: dict[str, Path] = {}
     for directory in paths.data_dirs():
-        base = directory / TABBOX_SUBDIR
-        if not base.is_dir():
-            continue
-        for child in sorted(p for p in base.iterdir() if p.is_dir()):
-            found.setdefault(_tabbox_id(child), child)
+        for base in sorted(directory.glob(TABBOX_GLOB)):
+            if not base.is_dir():
+                continue
+            for child in sorted(p for p in base.iterdir() if p.is_dir()):
+                found.setdefault(_tabbox_id(child), child)
     return found
 
 
 def window_switcher(name: str) -> Resolution:
     """KWin's task switcher (Alt+Tab), declared as `[WindowSwitcher] LayoutName`.
 
-    Nine of the thirteen look-and-feel packages on this machine declare
-    `org.kde.breeze.desktop` here, and not one of them ships a switcher: the
-    line is a Plasma 5 template that every theme built from it still carries,
-    Kubuntu's own included. `plasma-apply-lookandfeel` copies it into
-    `[TabBox] LayoutName` without checking whether it resolves.
+    Nine of the fourteen global themes installed here name
+    `org.kde.breeze.desktop`, Kubuntu's own three included, and not one ships a
+    switcher. `plasma-apply-lookandfeel` copies the name into
+    `[TabBox] LayoutName` without checking whether anything answers to it.
 
-    That case is deliberately `OK` -- see STOCK_SWITCHERS. A name that is
-    neither a stock spelling nor an installed layout is the real failure, and
-    it is fetchable: `kwinswitcher.knsrc`, `Uncompress=kpackage`.
+    Two places can answer. A `KWin/WindowSwitcher` KPackage is the modern one.
+    A look-and-feel package carrying `contents/windowswitcher/` is the old one,
+    and it still works -- KWin has not dropped the lookup. When neither
+    resolves, KWin falls back to its built-in switcher, which for a name like
+    `org.kde.breeze.desktop` is what the line was asking for anyway; reporting
+    that `MISS` would put a permanent red mark on almost every theme in the
+    store for something the user cannot fix and has not lost.
+
+    A name that resolves to no package of either kind and does not look like a
+    global theme is the real failure, and it is fetchable: `kwinswitcher.knsrc`,
+    `Uncompress=kpackage`.
     """
     r = Resolution("window-switcher", "Task switcher", name, MISSING)
     if not name:
@@ -451,10 +494,16 @@ def window_switcher(name: str) -> Resolution:
     if hit:
         r.status, r.path = OK, hit
         return r
-    if name in STOCK_SWITCHERS or _search("plasma/look-and-feel", name):
-        r.status = OK
-        r.detail = ("Plasma 5 spelling for the stock switcher; KWin uses its "
-                    "built-in one, which is what this asks for")
+    package = _look_and_feel_package(name)
+    if package and (package / LNF_SWITCHER).is_file():
+        # The Plasma 5 arrangement, still honoured. Nothing to report.
+        r.status, r.path = OK, package / LNF_SWITCHER
+        return r
+    if package:
+        r.status, r.path = OK, package
+        r.detail = ("a global theme, and KWin does look inside it for "
+                    f"{LNF_SWITCHER} -- but this one has none, so KWin uses "
+                    "its built-in switcher, which is what this asks for")
         return r
     r.detail = "no task switcher layout with this id is installed"
     return r
@@ -478,7 +527,7 @@ def desktop_switcher(name: str) -> Resolution:
     what the theme declared; the explanation is there under `-v`.
     """
     r = Resolution("desktop-switcher", "Desktop switcher", name, OK)
-    if name and name not in STOCK_SWITCHERS and not _search("plasma/look-and-feel", name):
+    if name and not _look_and_feel_package(name):
         r.detail = ("Plasma 6 has no KWin/DesktopSwitcher package type and its "
                     "theme applier never writes this key: declared, inert, and "
                     "nothing to install")

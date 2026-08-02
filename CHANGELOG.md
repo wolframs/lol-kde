@@ -12,6 +12,52 @@ Wolfram. Turn 1 is the first message after the context compaction on
 
 ---
 
+## Turn 5 — display scale 1.2 → 1.25
+
+### machine
+
+| what | file | old value | new value | revert |
+|---|---|---|---|---|
+| DP-1 scale | `~/.config/kwinoutputconfig.json` | `1.2` | `1.25` | `kscreen-doctor output.DP-1.scale.1.2` |
+| DP-2 scale | same | `1.2` | `1.25` | `kscreen-doctor output.DP-2.scale.1.2` |
+| DP-2 position | same | `2134,0` | `2048,0` | `kscreen-doctor output.DP-2.position.2134,0` |
+| Xwayland scale | `~/.config/kwinrc` `[Xwayland] Scale` | `1.2` | `1.25` | `kwriteconfig6 --file kwinrc --group Xwayland --key Scale 1.2 && qdbus6 org.kde.KWin /KWin org.kde.KWin.reconfigure` |
+
+Checkpoints: `~/.lol-kde/checkpoints/turn5-before-scale/` and
+`turn5-after-scale/`.
+
+**The before-checkpoint is incomplete.** It captured
+`~/.local/share/kscreen/` — the Plasma 5 location, which no longer receives
+writes — and missed `~/.config/kwinoutputconfig.json`, where Plasma 6
+actually stores this. The pre-change file is gone; the values are recorded in
+`outputs-before.txt` and the revert commands above. See that checkpoint's
+`GAP.md`.
+
+Why: at 1.2, `2560/1.2 = 2133.33` does not divide evenly, so the logical grid
+missed physical pixels horizontally. At 1.25, `2560/1.25 = 2048` and
+`1440/1.25 = 1152` — exact on both axes.
+
+### repo
+
+No changes.
+
+---
+
+## Turn 4 — Kvantum's opaque= list
+
+### machine
+
+No changes.
+
+### repo
+
+- `48bdeee` — `resolve.kvantum_opaque_apps()`, `cli._detail()` multi-line
+  indentation, and the research findings on Kvantum's pre-creation
+  translucency timing and KWin's Debug Console.
+- 66 → 69 tests
+
+---
+
 ## Turn 3 — pre-scaled Aurorae variants
 
 ### machine

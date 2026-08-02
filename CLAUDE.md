@@ -227,6 +227,37 @@ exactly the five broken variants installed here and nothing else.
 Fixing one properly means multiplying every `[Layout]` number by the same
 factor. Not done — nobody here uses these themes.
 
+## Where display configuration actually lives
+
+**Plasma 6 stores output scale, mode and position in
+`~/.config/kwinoutputconfig.json`.** KWin owns outputs now.
+`~/.local/share/kscreen/` is the Plasma 5 location; it still exists on
+upgraded systems, still looks authoritative, and is **not written to**.
+Backing it up and not the JSON produces a checkpoint that silently captures
+nothing. That happened here — see
+`~/.lol-kde/checkpoints/turn5-before-scale/GAP.md`.
+
+`kscreen-doctor` applies changes live *and* persists them to the JSON.
+Changing a scale does not move the other output: after shrinking DP-1 from
+2134 to 2048 logical px, DP-2 stayed anchored at x=2134, leaving an 86px
+logical gap between the screens. Set `output.<name>.position.<x>,<y>` too.
+
+`[Xwayland] Scale` in `kwinrc` is separate and does not follow the output
+scale. Set it explicitly and `reconfigure`.
+
+**Fractional scale arithmetic matters.** On a 2560x1440 panel:
+
+| scale | logical width | logical height | clean? |
+|---|---|---|---|
+| 1.2 | 2133.33 → rounded to 2134 | 1200 | **no** — 0.8px horizontal overhang |
+| 1.25 | 2048 | 1152 | yes, both axes |
+| 1.5 | 1706.67 | 960 | no |
+| 2.0 | 1280 | 720 | yes |
+
+At 1.2 the logical grid does not land on physical pixels horizontally but
+does vertically, which predicts worse artefacts on vertical edges than
+horizontal ones. Moved to 1.25 on turn 5.
+
 ## KWin's Debug Console
 
 `class DebugConsole : public QWidget`, constructed inside `kwin_wayland` by

@@ -12,6 +12,43 @@ Wolfram. Turn 1 is the first message after the context compaction on
 
 ---
 
+## Turn 6 — snapshot / diff / history
+
+### machine
+
+| what | change | revert |
+|---|---|---|
+| display scale | briefly set DP-1 to `1.2` and back to `1.25` as the regression test for the new `diff` | already reverted; verified `2048x1152 @ 1.25` |
+
+New directory: `~/.lol-kde/snapshots/` — 6 snapshots, ~500 KB each. Nothing is
+pruned automatically. `~/.lol-kde/journal.jsonl` records what the tool has done.
+The hand-made `~/.lol-kde/checkpoints/turn5-*` are untouched.
+
+### repo
+
+- `lolkde/snapshot.py` — declarative manifest (36 entries, 79 files here) with
+  a confidence column, byte capture across **all** cascade layers, a `state/`
+  directory of interpretable state, and **coverage probes**: read a fact from a
+  live instrument, read it back out of the captured bytes, report `GAP` with the
+  path where the value actually lives.
+- `lolkde/compare.py` — key-level and semantic diff, five sections.
+- `lolkde/journal.py` — append-only JSONL; a corrupt line costs one entry.
+- `lolkde/repair.py` — `write()` verifies by read-back instead of exit code and
+  distinguishes `WROTE` from `INHERITED`. Fixes a real silent no-op from turn 2.
+- `lolkde/cli.py` — `snapshot`, `snapshots`, `diff`, `history`; auto-snapshot
+  before `apply` / `install` / `legacy --remove`, with no opt-out; fixed
+  `lol-kde -v doctor` silently running non-verbose.
+- `ROADMAP.md`, `docs/restore-design.md`, `docs/open-questions.md` — restore is
+  designed, not built, and the deferral lives in the repo rather than anyone's
+  memory.
+- 69 → 101 tests.
+
+**Regression test, run for real:** `lol-kde snapshot --around
+'kscreen-doctor output.DP-1.scale.1.2'` reports the change under both
+`SEMANTIC` and `SETTINGS`. Turn 5's hand-made checkpoint missed exactly this.
+
+---
+
 ## Turn 5 — display scale 1.2 → 1.25
 
 ### machine

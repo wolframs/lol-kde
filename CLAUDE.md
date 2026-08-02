@@ -4,12 +4,24 @@ Everything here was learned the expensive way in one session. Read it before
 theorising about KDE theming; most of it is not discoverable from documentation
 and several items cost hours.
 
-## Keep CHANGELOG.md current
+## Keep the record files current
 
 Every change to Wolfram's **live configuration** — not just repo commits —
 goes in `CHANGELOG.md` with the old value, the new value, the backup path and
 the exact revert command. Time is counted in **user turns**, not dates.
 Back up before writing; record the backup path in the same entry.
+
+Three more files carry work that would otherwise live in someone's memory.
+Keeping them current is not optional:
+
+| file | holds |
+|---|---|
+| `ROADMAP.md` | what is built, deferred, blocked. Anything deferred gets a row **and** a design note, or it does not get deferred |
+| `docs/open-questions.md` | every claim asserted but unverified, each with the one command that settles it. Move answers into this file's facts and delete the row |
+| `docs/restore-design.md` | the restore design, executable without re-deriving it |
+
+`lol-kde snapshot` before changing anything, and `lol-kde diff --changelog`
+emits the CHANGELOG row for you. The turn number is still yours to fill in.
 
 ## Method rules (these matter more than the facts below)
 
@@ -286,6 +298,33 @@ Written and run here, but it matched nothing — the console was already gone,
 so this route is **untested against a live console**. Also note
 `w.internal` is `undefined` in KWin 6 scripting, so it cannot be used to
 confirm whether `windowList()` includes internal windows at all.
+
+## Snapshots: things measured while building the capture
+
+**`kwriteconfig6` exits 0 and writes nothing when the value already matches an
+inherited default — and this repo walked into it.** On turn 2
+`repair.aurorae_plugin()` wrote `theme=__aurorae__svg__Layan` into
+`~/.config/kwinrc`, reported success, and the key never appeared. The `library`
+pin (which differs from the inherited value) did land, so nothing broke. Never
+trust the exit code: `repair.write()` now returns `WROTE` / `INHERITED` /
+`UNCHANGED` / `FAILED` from a two-level read-back — did it resolve, and did it
+land in the layer we aimed at.
+
+**Bounded walks, measured on this machine.** A full walk of
+`~/.local/share/icons` (227k files, 1.8 GB) took a snapshot from 2.5s to 11.3s.
+Both the sweep and the package inventory are now capped. The sweep collapses
+any top-level subtree over 2,000 entries in a *single* pass — the earlier
+version counted the subtree and then walked it again to roll it up.
+
+**Never record a walk-order-dependent number in a snapshot.** The first
+collapsed-subtree row included `files_seen`, which depends on where the budget
+trips, so every collapsed subtree compared as changed between two snapshots of
+an unchanged tree. Collapsed rows now carry the directory's own mtime and
+nothing else.
+
+**`diff --live` captures the live system through `capture(into=...)`**, the same
+code path as a stored snapshot. Reading live config directly on one side and
+captured bytes on the other would compare two different things.
 
 ## Measuring anything on screen under Wayland
 

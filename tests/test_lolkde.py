@@ -5,6 +5,9 @@ Run with: python3 -m unittest discover -s tests
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import sys
 import tempfile
 import unittest
@@ -12,8 +15,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lolkde import (banner, catalog, install, kconfig, knsrc, legacy,  # noqa: E402
-                    manifest, paths, repair, resolve, store)
+from lolkde import (banner, catalog, cli, compare, install, journal,  # noqa: E402
+                    kconfig, knsrc, legacy, manifest, paths, repair,
+                    resolve, snapshot, store)
 
 
 class TestManifestParsing(unittest.TestCase):
@@ -137,6 +141,273 @@ class TestAuroraePlugin(unittest.TestCase):
         # KWin loads KDecoration3 plugins out of a group named for
         # KDecoration2. Renaming the group silently unsets the decoration.
         self.assertEqual(repair.DECO_GROUP, "org.kde.kdecoration2")
+
+
+class TestSnapshotManifest(unittest.TestCase):
+    """The manifest is the whole feature. If it is wrong, nothing else matters."""
+
+    def test_every_entry_says_what_it_holds(self):
+        for entry in snapshot.MANIFEST:
+            self.assertTrue(entry.holds.strip(), f"{entry.pattern} has no description")
+
+    def test_tiers_and_confidence_are_from_the_known_sets(self):
+        for entry in snapshot.MANIFEST:
+            self.assertIn(entry.tier, (snapshot.CORE, snapshot.CONTEXT, snapshot.LEGACY))
+            self.assertIn(entry.confidence,
+                          (snapshot.VERIFIED, snapshot.LIKELY, snapshot.UNVERIFIED))
+
+    def test_every_root_is_one_we_can_expand(self):
+        known = set(snapshot.roots())
+        for entry in snapshot.MANIFEST:
+            self.assertIn(entry.root, known, entry.pattern)
+
+    def test_legacy_entries_name_their_replacement(self):
+        # A dead path with no successor recorded is how you forget that it is
+        # dead. kscreen cost this project a checkpoint exactly that way.
+        for entry in snapshot.MANIFEST:
+            if entry.tier == snapshot.LEGACY:
+                self.assertTrue(entry.superseded_by, entry.pattern)
+
+    def test_the_file_that_caused_the_gap_is_in_the_manifest(self):
+        patterns = {e.pattern for e in snapshot.MANIFEST}
+        self.assertIn("kwinoutputconfig.json", patterns)
+
+    def test_kdedefaults_layer_is_captured(self):
+        # Several pointers resolve only from kdedefaults. A ~/.config-only
+        # manifest looks complete and restores to a state that never existed.
+        patterns = {e.pattern for e in snapshot.MANIFEST}
+        self.assertIn("kdedefaults/*", patterns)
+
+    def test_artwork_is_excluded_from_byte_capture(self):
+        self.assertIn("*.svg", snapshot.NEVER_COPY)
+
+
+class TestSweepBudget(unittest.TestCase):
+    """The sweep must stay a fixed size and must not invent changes."""
+
+    def _tree(self, root: Path, name: str, count: int) -> None:
+        directory = root / name
+        directory.mkdir(parents=True)
+        for index in range(count):
+            (directory / f"f{index}").write_text("x")
+
+    def test_large_subtree_collapses_to_one_row(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            self._tree(base, "huge", 60)
+            self._tree(base, "small", 3)
+            rows = snapshot.sweep(base, budget=10)
+            self.assertIn("huge", rows)
+            self.assertTrue(rows["huge"]["collapsed"])
+            self.assertNotIn("huge/f0", rows)
+            self.assertIn("small/f0", rows)
+
+    def test_collapsed_rows_do_not_record_a_walk_dependent_count(self):
+        # Where the budget trips depends on walk order, so recording it would
+        # make every collapsed subtree differ between two identical sweeps.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            self._tree(base, "huge", 60)
+            row = snapshot.sweep(base, budget=10)["huge"]
+            self.assertNotIn("files_seen", row)
+            self.assertNotIn("files", row)
+
+    def test_two_sweeps_of_an_unchanged_tree_agree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            self._tree(base, "huge", 60)
+            self._tree(base, "small", 3)
+            self.assertEqual(snapshot.sweep(base, budget=10),
+                             snapshot.sweep(base, budget=10))
+
+    def test_missing_base_is_empty_not_an_error(self):
+        self.assertEqual(snapshot.sweep(Path("/definitely/not/here")), {})
+
+
+class TestSnapshotIdentity(unittest.TestCase):
+
+    def test_ids_sort_chronologically(self):
+        first, second = snapshot.new_id(), snapshot.new_id()
+        self.assertEqual(sorted([second, first])[0][:19], first[:19])
+
+    def test_label_is_slugified_into_the_id(self):
+        self.assertTrue(snapshot.new_id("before scale!").endswith("-before-scale"))
+
+    def test_id_has_no_label_when_none_given(self):
+        identifier = snapshot.new_id()
+        self.assertRegex(identifier, r"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z-[0-9a-f]{4}$")
+
+
+class TestValueLocator(unittest.TestCase):
+    """On a GAP, the snapshot must say where the value actually lives."""
+
+    def test_finds_the_key_holding_a_value(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp)
+            (config / "kwinrc").write_text("[Xwayland]\nScale=1.25\n")
+            (config / "other.json").write_text('{"outputs": [{"scale": 1.25}]}')
+            saved = os.environ.get("XDG_CONFIG_HOME")
+            os.environ["XDG_CONFIG_HOME"] = tmp
+            try:
+                found = snapshot.locate_value("1.25")
+            finally:
+                if saved is None:
+                    del os.environ["XDG_CONFIG_HOME"]
+                else:
+                    os.environ["XDG_CONFIG_HOME"] = saved
+            self.assertTrue(any("kwinrc" in f for f in found), found)
+
+    def test_empty_value_finds_nothing(self):
+        self.assertEqual(snapshot.locate_value(""), [])
+
+
+class TestCompare(unittest.TestCase):
+    """Key-level diffing of two synthetic snapshots."""
+
+    def _snap(self, root: Path, files: dict[str, str], audit=None, outputs=None):
+        root.mkdir(parents=True, exist_ok=True)
+        entries = []
+        for relative, body in files.items():
+            target = root / "files" / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(body)
+            entries.append({"path": relative, "source": f"/live/{relative}",
+                            "status": "captured",
+                            "sha256": hashlib.sha256(body.encode()).hexdigest()})
+        (root / "manifest.json").write_text(json.dumps(entries))
+        state = root / "state"
+        state.mkdir(exist_ok=True)
+        (state / "audit.json").write_text(json.dumps(audit or []))
+        (state / "inventory.json").write_text(json.dumps({}))
+        if outputs is not None:
+            (state / "outputs.json").write_text(json.dumps({"outputs": outputs}))
+        return root
+
+    def test_changed_key_is_reported_with_both_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            a = self._snap(Path(tmp) / "a", {"config/kwinrc": "[Xwayland]\nScale=1.2\n"})
+            b = self._snap(Path(tmp) / "b", {"config/kwinrc": "[Xwayland]\nScale=1.25\n"})
+            report = compare.compare(a, b)
+            changed = [c for c in report.settings if c.what == "Scale"]
+            self.assertEqual(len(changed), 1)
+            self.assertEqual((changed[0].before, changed[0].after), ("1.2", "1.25"))
+
+    def test_version_churn_is_suppressed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            a = self._snap(Path(tmp) / "a", {"config/kwinrc": "[$Version]\nupdate_info=a\n"})
+            b = self._snap(Path(tmp) / "b", {"config/kwinrc": "[$Version]\nupdate_info=b\n"})
+            self.assertEqual(compare.compare(a, b).settings, [])
+
+    def test_status_change_is_semantic_not_just_a_value(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            a = self._snap(Path(tmp) / "a", {},
+                           audit=[{"label": "Icon theme", "live": "Tela", "status": "OK"}])
+            b = self._snap(Path(tmp) / "b", {},
+                           audit=[{"label": "Icon theme", "live": "Tela", "status": "MISSING"}])
+            report = compare.compare(a, b)
+            self.assertEqual(len(report.semantic), 1)
+            self.assertIn("install", report.semantic[0].note)
+
+    def test_json_diff_reports_a_path_not_a_text_blob(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            a = self._snap(Path(tmp) / "a", {"config/x.json": '{"a": [{"scale": 1.2}]}'})
+            b = self._snap(Path(tmp) / "b", {"config/x.json": '{"a": [{"scale": 1.25}]}'})
+            report = compare.compare(a, b)
+            self.assertEqual(len(report.settings), 1)
+            self.assertEqual(report.settings[0].what, "a[0].scale")
+
+    def test_output_scale_change_is_semantic(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            a = self._snap(Path(tmp) / "a", {}, outputs=[{"name": "DP-1", "scale": 1.25}])
+            b = self._snap(Path(tmp) / "b", {}, outputs=[{"name": "DP-1", "scale": 1.2}])
+            report = compare.compare(a, b)
+            self.assertEqual(len(report.semantic), 1)
+            self.assertIn("fractional", report.semantic[0].note)
+
+    def test_identical_snapshots_produce_an_empty_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            body = {"config/kwinrc": "[Xwayland]\nScale=1.25\n"}
+            a = self._snap(Path(tmp) / "a", body)
+            b = self._snap(Path(tmp) / "b", body)
+            self.assertTrue(compare.compare(a, b).empty)
+
+    def test_integer_scale_is_not_flagged_as_fractional(self):
+        self.assertEqual(compare._fractional(2.0), "")
+        self.assertTrue(compare._fractional(1.2))
+
+
+class TestVerboseFlagPosition(unittest.TestCase):
+    """-v must work on both sides of the subcommand.
+
+    The subparser's own default overwrote the top-level flag in the shared
+    namespace, so `lol-kde -v doctor` silently ran non-verbose.
+    """
+
+    def setUp(self):
+        self.parser = cli.build_parser()
+
+    def test_before_the_subcommand(self):
+        self.assertTrue(self.parser.parse_args(["-v", "doctor"]).verbose)
+
+    def test_after_the_subcommand(self):
+        self.assertTrue(self.parser.parse_args(["doctor", "-v"]).verbose)
+
+    def test_absent_is_still_false(self):
+        self.assertFalse(self.parser.parse_args(["doctor"]).verbose)
+
+    def test_every_subcommand_accepts_it_afterwards(self):
+        for command, extra in (("doctor", []), ("list", []), ("snapshots", []),
+                               ("check", ["x"]), ("legacy", []), ("why", [])):
+            with self.subTest(command=command):
+                self.assertTrue(self.parser.parse_args([command] + extra + ["-v"]).verbose)
+
+
+class TestWriteResult(unittest.TestCase):
+    """An exit code is not evidence that a value was written."""
+
+    def test_inherited_resolves_but_is_not_pinned(self):
+        result = repair.WriteResult("kwinrc", "G", "k", "v", repair.INHERITED)
+        self.assertTrue(result.ok)
+        self.assertFalse(result.pinned)
+
+    def test_wrote_is_pinned(self):
+        self.assertTrue(repair.WriteResult("f", "g", "k", "v", repair.WROTE).pinned)
+
+    def test_failed_is_neither(self):
+        result = repair.WriteResult("f", "g", "k", "v", repair.FAILED)
+        self.assertFalse(result.ok)
+        self.assertFalse(result.pinned)
+
+
+class TestJournal(unittest.TestCase):
+
+    def test_a_corrupt_line_costs_one_entry_not_the_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            saved = os.environ.get("LOL_KDE_HOME")
+            os.environ["LOL_KDE_HOME"] = tmp
+            try:
+                journal.record("snapshot", snapshot_id="a")
+                with open(journal.path(), "a", encoding="utf-8") as handle:
+                    handle.write("{not json\n")
+                journal.record("apply", theme="b")
+                found = journal.entries()
+            finally:
+                if saved is None:
+                    del os.environ["LOL_KDE_HOME"]
+                else:
+                    os.environ["LOL_KDE_HOME"] = saved
+            self.assertEqual([e["action"] for e in found], ["snapshot", "apply"])
+
+    def test_no_journal_is_an_empty_list(self):
+        saved = os.environ.get("LOL_KDE_HOME")
+        os.environ["LOL_KDE_HOME"] = "/definitely/not/here"
+        try:
+            self.assertEqual(journal.entries(), [])
+        finally:
+            if saved is None:
+                del os.environ["LOL_KDE_HOME"]
+            else:
+                os.environ["LOL_KDE_HOME"] = saved
 
 
 class TestKvantumOpaqueList(unittest.TestCase):

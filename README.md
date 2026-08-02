@@ -71,7 +71,91 @@ lol-kde apply <theme>               # apply, then verify it actually took
 lol-kde why                         # what a Global Theme actually is
 lol-kde legacy                      # packages using pre-5.19 metadata.desktop
 lol-kde legacy --remove             # delete the orphaned ones (never the needed ones)
+
+lol-kde snapshot -m "before I break something"
+lol-kde snapshot --explain          # what a snapshot captures, and how much we trust it
+lol-kde snapshot --around 'CMD'     # snapshot, run CMD, wait, snapshot, diff
+lol-kde snapshots                   # list them
+lol-kde diff                        # latest snapshot vs the live system
+lol-kde diff A B                    # two snapshots
+lol-kde diff A B --changelog        # paste-ready CHANGELOG table
+lol-kde history                     # what this tool has done to your machine
 ```
+
+## `lol-kde snapshot` — a capture that can tell when it failed
+
+A checkpoint is only as good as its file list, and a plausible-looking path can
+be a decade out of date. This project learned that the expensive way: a
+checkpoint taken before a display-scale change backed up
+`~/.local/share/kscreen/` — the **Plasma 5** location, still present on upgraded
+systems, still non-empty, and never written to. Plasma 6 keeps output scale in
+`~/.config/kwinoutputconfig.json`. The capture copied real files, reported
+success, and preserved nothing.
+
+So every snapshot ends by running **coverage probes**: read a fact from a live
+instrument, then read the same fact back out of the bytes just written.
+
+```
+Snapshot 2026-08-02T16-00-31Z-a59a
+  79 files, 130,005 bytes  -> ~/.lol-kde/snapshots/2026-08-02T16-00-31Z-a59a
+  ok     coverage 13/13 facts verified
+```
+
+If a fact is missing, the snapshot says so *and* goes looking for it, so the
+manifest can be fixed instead of silently trusted:
+
+```
+  GAP  output.DP-1.scale = 1.2
+       config/kwinoutputconfig.json was not captured
+       found at: ~/.config/kwinoutputconfig.json  [0].data[0].scale
+```
+
+Each cascade-resolved probe also checks, via `kconfig.origin()`, that the layer
+that actually *wins* was captured. `cursorTheme` resolves from
+`kdedefaults/kcminputrc`, so a `~/.config`-only manifest would pass a naive
+"the key exists somewhere" test and still be unrestorable.
+
+Snapshots are ~500 KB and take about two seconds. Nothing is ever pruned
+automatically.
+
+## `lol-kde diff` — what changed, and does it matter
+
+A line diff of a KDE config is noise: groups reorder, `[$Version] update_info`
+churns on every point release. The diff is key-level, and above that semantic:
+
+```
+SEMANTIC
+  ~ output DP-1  scale    1.25 -> 1.2
+      fractional scale
+
+SETTINGS
+  ~ config/kwinoutputconfig.json  [0].data[0].scale    1.25 -> 1.2
+
+UNMANIFESTED
+  files that changed and are in no manifest entry
+  ~ config  kwinoutputconfig.json      << looks load-bearing
+```
+
+`SEMANTIC` reports status transitions, which need different fixes:
+`resolved → missing` means the thing is gone (`lol-kde install`), `drift` means
+the pointer changed (`lol-kde apply`), and a **silent content change** — same
+pointer, same status, different bytes — is how an edit to
+`reduce_window_opacity` shows up at all.
+
+`UNMANIFESTED` is the section whose absence cost this project a pre-change
+state: files that changed and are in no manifest entry, KDE-shaped names first.
+It comes from an mtime sweep that collapses any subtree over 2,000 entries, so
+`~/.local/share/icons` (227k files, 1.8 GB) becomes one row without anyone
+maintaining a blocklist.
+
+`apply`, `install` and `legacy --remove` snapshot first, always. There is no
+flag to disable that; the only thing it could do is destroy the artifact that
+makes the operation undoable.
+
+**Restore is designed but not built** — see
+[`docs/restore-design.md`](docs/restore-design.md) and
+[`ROADMAP.md`](ROADMAP.md). It is blocked on three tests in
+[`docs/open-questions.md`](docs/open-questions.md).
 
 `doctor` compares the live configuration against what the applied theme declares:
 

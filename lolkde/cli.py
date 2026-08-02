@@ -8,13 +8,15 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import json
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
-from . import banner, catalog
+from . import banner, catalog, compare, journal, snapshot
 from . import legacy
 from . import install as installer
 from . import manifest, repair, resolve
@@ -197,6 +199,7 @@ def cmd_legacy(args: argparse.Namespace) -> int:
             print("Nothing was removed.")
             return 0
 
+    auto_snapshot("before legacy --remove")
     removed = 0
     for pkg in removable:
         try:
@@ -397,6 +400,8 @@ def cmd_install(args: argparse.Namespace) -> int:
         return 0
 
     verb = "Would install" if args.dry_run else "Installing"
+    if not args.dry_run:
+        auto_snapshot(f"before install {theme.name}")
     print(f"{verb} {len(theme.dependencies)} declared dependencies for {theme.display_name}\n")
 
     failures = 0
@@ -447,6 +452,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
             "      The crash is self-healing (systemd restarts it) and your "
             "settings survive. Logging out and back in avoids it entirely.\n", "33"))
 
+    auto_snapshot(f"before apply {theme.name}")
     completed = subprocess.run([tool, "--apply", theme.name], text=True)
     if completed.returncode != 0:
         return completed.returncode
@@ -475,6 +481,242 @@ def cmd_apply(args: argparse.Namespace) -> int:
     return 1 if broken or unset else 0
 
 
+def auto_snapshot(reason: str) -> dict | None:
+    """Capture before mutating. Deliberately has no opt-out flag.
+
+    The only thing a --no-snapshot switch could do is destroy the artifact
+    that makes the operation undoable.
+    """
+    try:
+        meta = snapshot.capture(reason=reason, with_sweep=False)
+    except OSError as exc:
+        print(_paint(f"  warning: could not snapshot first ({exc})", "33"),
+              file=sys.stderr)
+        return None
+    coverage = meta["coverage"]
+    print(_paint(f"  snapshot  {meta['id']}  ({reason})", "36"))
+    line = (f"            {meta['files_captured']} files, {meta['bytes']} bytes, "
+            f"coverage {coverage['ok']}/{coverage['total']}")
+    if coverage["gaps"]:
+        line += _paint(f"  GAPS: {', '.join(coverage['gaps'])}", "33")
+    print(_paint(line, "2"))
+    journal.record("snapshot", snapshot_id=meta["id"], reason=reason,
+                   coverage=coverage)
+    return meta
+
+
+def cmd_snapshot(args: argparse.Namespace) -> int:
+    if args.explain:
+        return _explain_manifest(args)
+    if args.around:
+        return _snapshot_around(args)
+
+    meta = snapshot.capture(message=args.message, label=args.label,
+                            with_sweep=not args.no_sweep)
+    journal.record("snapshot", snapshot_id=meta["id"], reason="manual",
+                   message=args.message, coverage=meta["coverage"])
+    return _report_snapshot(meta, args.verbose)
+
+
+def _report_snapshot(meta: dict, verbose: bool) -> int:
+    coverage = meta["coverage"]
+    print(f"Snapshot {meta['id']}")
+    print(f"  {meta['files_captured']} files, {meta['bytes']:,} bytes  "
+          f"-> {meta['path']}")
+    gaps = coverage["gaps"]
+    mark = _mark(OK if not gaps else DEGRADED)
+    print(f"  {mark}  coverage {coverage['ok']}/{coverage['total']} facts verified")
+
+    if gaps:
+        detail = json.loads((Path(meta["path"]) / "coverage.json").read_text())
+        print()
+        print(_paint("  A gap means this snapshot does NOT contain a fact the live", "33"))
+        print(_paint("  system has. Fix the manifest in lolkde/snapshot.py, re-snapshot.", "33"))
+        for row in detail:
+            if row["status"] != "GAP":
+                continue
+            print(f"\n  GAP  {row['probe']} = {row['live']}")
+            print(_paint(f"       {row['detail']}", "2"))
+            for where in row["found_at"]:
+                print(_paint(f"       found at: {where}", "36"))
+            if not row["found_at"]:
+                print(_paint("       could not locate this value anywhere in ~/.config", "2"))
+    for warning in meta.get("warnings", []):
+        print(_paint(f"\n  warn  {warning}", "33"))
+    if verbose:
+        print(_paint(f"\n  read it with: lol-kde diff {meta['id']}", "2"))
+    return 1 if gaps else 0
+
+
+def _explain_manifest(args: argparse.Namespace) -> int:
+    print("What a snapshot captures, and how much we trust each entry.\n")
+    tiers: dict[str, list] = {}
+    for entry in snapshot.MANIFEST:
+        tiers.setdefault(entry.tier, []).append(entry)
+    for tier in ("core", "context", "legacy"):
+        rows = tiers.get(tier, [])
+        if not rows:
+            continue
+        print(_paint(f"{tier}:", "1"))
+        for entry in rows:
+            hits = snapshot.expand(entry)
+            state = f"{len(hits)} file(s)" if hits else _paint("absent", "2")
+            colour = {"verified": "32", "likely": "33", "unverified": "31"}[entry.confidence]
+            print(f"  {_paint(entry.confidence.ljust(10), colour)} "
+                  f"{entry.root}/{entry.pattern:<45} {state}")
+            if args.verbose:
+                print(_paint(f"             {entry.holds}", "2"))
+                if entry.superseded_by:
+                    print(_paint(f"             superseded by {entry.superseded_by}", "36"))
+        print()
+    print(_paint("Low-confidence entries are listed in docs/open-questions.md,", "2"))
+    print(_paint("each with the command that would settle it.", "2"))
+    return 0
+
+
+def _snapshot_around(args: argparse.Namespace) -> int:
+    """Snapshot, run a command, wait for KDE to settle, snapshot again.
+
+    Doubles as a manifest-learning loop: every deliberate change reports which
+    paths moved, split into ones we capture and ones we do not.
+    """
+    before = snapshot.capture(message=f"before: {args.around}", reason="around")
+    print(f"before  {before['id']}")
+    print(_paint(f"running: {args.around}", "2"))
+    completed = subprocess.run(args.around, shell=True)
+    waited = snapshot.wait_for_quiescence()
+    print(_paint(f"waited {waited:.1f}s for ~/.config to settle", "2"))
+    after = snapshot.capture(message=f"after: {args.around}", reason="around")
+    print(f"after   {after['id']}")
+    journal.record("around", command=args.around, before=before["id"],
+                   after=after["id"], exit_code=completed.returncode)
+
+    report = compare.compare(Path(before["path"]), Path(after["path"]))
+    print()
+    _print_report(report, args.verbose)
+    if report.empty:
+        print(_paint("\nNothing changed. If you expected a change, the manifest is "
+                     "missing the file that holds it.", "33"))
+        return 1
+    return 0
+
+
+def cmd_snapshots(args: argparse.Namespace) -> int:
+    found = snapshot.listing()
+    if not found:
+        print("No snapshots yet.  lol-kde snapshot -m \"baseline\"")
+        return 0
+    for meta in found:
+        coverage = meta.get("coverage", {})
+        gaps = coverage.get("gaps") or []
+        mark = _mark(DEGRADED if gaps else OK)
+        theme = meta.get("applied_theme") or "(none)"
+        print(f"  {mark}  {meta['id']:<32} {theme}")
+        note = meta.get("message") or meta.get("reason", "")
+        detail = f"        {coverage.get('ok', 0)}/{coverage.get('total', 0)} verified"
+        if note:
+            detail += f"  {note}"
+        print(_paint(detail, "2"))
+    old = snapshot.store() / "checkpoints"
+    if old.is_dir():
+        count = len([p for p in old.iterdir() if p.is_dir()])
+        print(_paint(f"\n  plus {count} hand-made checkpoint(s) in {old}", "2"))
+    return 0
+
+
+def cmd_diff(args: argparse.Namespace) -> int:
+    before = snapshot.find(args.before)
+    if before is None:
+        return _no_such_snapshot(args.before)
+
+    if args.after:
+        after = snapshot.find(args.after)
+        if after is None:
+            return _no_such_snapshot(args.after)
+        after_id = after.name
+        report = compare.compare(before, after)
+    else:
+        # Capture the live system through exactly the same code path, so the
+        # two sides can never be compared unfairly.
+        with tempfile.TemporaryDirectory(prefix="lol-kde-live-") as tmp:
+            live = Path(tmp) / "live"
+            meta = snapshot.capture(reason="diff --live", into=live)
+            after_id = "live"
+            report = compare.compare(before, live)
+            _ = meta
+
+    print(f"{before.name}  ->  {after_id}\n")
+    if args.changelog:
+        for row in journal.changelog_rows(report, before.name, after_id):
+            print(row)
+        return 0
+    _print_report(report, args.all)
+    return 1 if not report.empty else 0
+
+
+def _no_such_snapshot(reference: str) -> int:
+    candidates = snapshot.ambiguous(reference)
+    if len(candidates) > 1:
+        print(f"error: {reference!r} matches {len(candidates)} snapshots:", file=sys.stderr)
+        for name in candidates:
+            print(f"  {name}", file=sys.stderr)
+    else:
+        print(f"error: no snapshot matching {reference!r}", file=sys.stderr)
+        print("       lol-kde snapshots   lists what you have", file=sys.stderr)
+    return 2
+
+
+_SECTION_COLOUR = {"SEMANTIC": "36", "SETTINGS": "0", "UNMANIFESTED": "33",
+                   "BYTES": "2", "INVENTORY": "0"}
+
+
+def _print_report(report: compare.Report, show_all: bool) -> None:
+    if report.empty:
+        print("No differences.")
+        return
+    sections = (
+        ("SEMANTIC", report.semantic),
+        ("SETTINGS", report.settings),
+        ("UNMANIFESTED", report.unmanifested),
+        ("BYTES", report.byte_only),
+        ("INVENTORY", report.inventory),
+    )
+    for name, changes in sections:
+        if not changes:
+            continue
+        shown = changes if show_all else changes[:20]
+        print(_paint(name, _SECTION_COLOUR.get(name, "0")))
+        if name == "UNMANIFESTED":
+            print(_paint("  files that changed and are in no manifest entry", "2"))
+        for change in shown:
+            head = f"  {change.kind} {change.where}"
+            body = change.what
+            if change.before or change.after:
+                body += f"    {change.before or '(absent)'} -> {change.after or '(absent)'}"
+            print(f"{head}  {body}")
+            if change.note:
+                print(_paint(f"      {change.note}", "2"))
+        if len(changes) > len(shown):
+            print(_paint(f"  … {len(changes) - len(shown)} more (--all)", "2"))
+        print()
+
+
+def cmd_history(args: argparse.Namespace) -> int:
+    found = journal.entries(args.n)
+    if not found:
+        print("Nothing recorded yet.")
+        return 0
+    for entry in found:
+        when = entry.get("at", "")[:19].replace("T", " ")
+        action = entry.get("action", "?")
+        rest = {k: v for k, v in entry.items()
+                if k not in ("at", "action", "pid")}
+        summary = "  ".join(f"{k}={v}" for k, v in sorted(rest.items()))
+        print(f"  {when}  {action:<10} {_paint(summary, '2')}")
+    print(_paint(f"\n  {journal.path()}", "2"))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="lol-kde",
@@ -486,9 +728,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Accept -v after the subcommand too: "lol-kde doctor -v" is what people
     # actually type, and argparse only allows it before by default.
+    #
+    # default=SUPPRESS matters. Without it the subparser's own default (False)
+    # is written into the shared namespace *after* the top-level flag is
+    # parsed, so "lol-kde -v doctor" silently turned verbose back off.
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("-v", "--verbose", action="store_true",
-                        help=argparse.SUPPRESS)
+                        default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     sub = parser.add_subparsers(dest="command", parser_class=lambda **kw:
                                 argparse.ArgumentParser(parents=[common], **kw))
 
@@ -536,6 +782,34 @@ def build_parser() -> argparse.ArgumentParser:
 
     why = sub.add_parser("why", help="explain how KDE theming is actually layered")
     why.set_defaults(func=cmd_why)
+
+    snap = sub.add_parser("snapshot", help="capture the current KDE state")
+    snap.add_argument("-m", "--message", default="", help="why you took it")
+    snap.add_argument("--label", default="", help="short slug appended to the id")
+    snap.add_argument("--explain", action="store_true",
+                      help="print the manifest instead of capturing")
+    snap.add_argument("--around", metavar="CMD",
+                      help="snapshot, run CMD, wait for KDE to settle, snapshot again")
+    snap.add_argument("--no-sweep", action="store_true",
+                      help="skip the mtime sweep (faster, loses UNMANIFESTED)")
+    snap.set_defaults(func=cmd_snapshot)
+
+    snaps = sub.add_parser("snapshots", help="list captured snapshots")
+    snaps.set_defaults(func=cmd_snapshots)
+
+    dif = sub.add_parser("diff", help="compare two snapshots, or one against live")
+    dif.add_argument("before", nargs="?", default="latest")
+    dif.add_argument("after", nargs="?", default="",
+                     help="a snapshot id; omit to compare against the live system")
+    dif.add_argument("--changelog", action="store_true",
+                     help="emit a paste-ready CHANGELOG.md table")
+    dif.add_argument("--all", action="store_true",
+                     help="include noisy sections and low-signal paths")
+    dif.set_defaults(func=cmd_diff)
+
+    hist = sub.add_parser("history", help="what this tool has done to your machine")
+    hist.add_argument("-n", type=int, default=20, help="how many entries (0 = all)")
+    hist.set_defaults(func=cmd_history)
     return parser
 
 

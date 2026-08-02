@@ -182,6 +182,40 @@ renders buttons by state id, and all five states — `active-center`,
 measure ~80% covered with real artwork. Cosmetic log spam only. Deleting the
 one `<use>` line silences it; upstream is `github.com/vinceliuice/Layan-kde`.
 
+## Measuring anything on screen under Wayland
+
+**A Wayland client cannot know where it is.** `QWidget::setGeometry()` position
+is ignored and `windowHandle()->position()` is meaningless. To crop a
+screenshot to a specific window, ask KWin via a script:
+
+```js
+for (const w of workspace.windowList())
+  if (w.caption.indexOf("marker") >= 0)
+    print("GEOM " + w.frameGeometry.x + " " + w.frameGeometry.y
+          + " " + w.frameGeometry.width + " " + w.frameGeometry.height);
+```
+```sh
+qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript /path/geom.js uniquename
+qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.start
+journalctl --user --since "20 sec ago" | grep -o 'GEOM.*'
+```
+
+Use a **unique script name each time** — `start()` only runs newly loaded
+scripts, so reusing a name silently prints nothing.
+
+**KWin reports LOGICAL pixels; screenshots are DEVICE pixels.** This desktop
+is 4268x1200 logical at scale 1.2, i.e. 5120x1440 device. Multiply KWin
+geometry by the output scale (`kscreen-doctor -o`) before cropping, or you
+will crop a completely different window and conclude something false. This
+cost four attempts.
+
+**`w.alpha` does not exist in KWin 6 scripting** — it returns `undefined`, not
+false. Do not test surface transparency that way.
+
+**Do not judge translucency against a background of the same colour.** A dark
+window over a dark window is not a measurement. Put the probe over the
+wallpaper, or measure alpha directly and skip the screenshot.
+
 ## Open leads
 
 1. **`contrast` effect** won't load despite `contrastEnabled=true` and a KWin

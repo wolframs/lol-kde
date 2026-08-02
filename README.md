@@ -8,16 +8,16 @@
 │                                                          │
 │  NOTICE                                                  │
 │                                                          │
-│  A Global Theme is a list of up to seven things you may  │
-│  or may not own.  This program determines which.  We     │
-│  regret the necessity.                                   │
+│  A Global Theme is a list of up to ten things you may or │
+│  may not own.  This program determines which.  We regret │
+│  the necessity.                                          │
 └──────────────────────────────────────────────────────────┘
 ```
 
 **KDE global themes declare their dependencies. Nothing installs them. This does.**
 
 A Plasma "Global Theme" is not a theme. It is a small text file of pointers to
-other components that must already be installed — up to seven of them:
+other components that must already be installed — up to ten of them:
 
 ```ini
 # Sweet-Ambar-Blue/contents/defaults -- the entire functional content
@@ -27,6 +27,9 @@ other components that must already be installed — up to seven of them:
 [kcminputrc][Mouse]      cursorTheme = Sweet-cursors
 [plasmarc][Theme]        name        = Sweet-Ambar-Blue
 [kwinrc][…kdecoration2]  theme       = __aurorae__svg__Sweet-ambar-blue
+[kwinrc][WindowSwitcher] LayoutName  = org.kde.breeze.desktop
+[KSplash]                Theme       = Sweet-Ambar-Blue
+[Wallpaper]              Image       = Sweet-Ambar-Blue
 ```
 
 Download a theme. Apply it. If a pointer does not resolve, KDE **falls back
@@ -108,10 +111,12 @@ Applied global theme: Sweet-Ambar-Blue
          theme declares 'Sweet-cursors' but nothing set it; KDE default in use
   ok     Plasma style       Sweet-Ambar-Blue
   ok     Splash screen      Sweet-Ambar-Blue
+  ok     Task switcher      org.kde.breeze.desktop
+  ok     Desktop switcher   org.kde.breeze.desktop
   unset  Window decoration  (not set)
          theme declares 'Sweet-ambar-blue' but nothing set it; KDE default in use
 
-5/7 ok, 2 unset
+7/9 ok, 2 unset
 
 Repair: lol-kde install Sweet-Ambar-Blue   # fetch missing pieces
         lol-kde apply Sweet-Ambar-Blue     # reset unset/drifted pointers
@@ -125,9 +130,12 @@ Repair: lol-kde install Sweet-Ambar-Blue   # fetch missing pieces
 | `warn` | present, but will not render as intended (usually Kvantum) |
 | `MISS` | the configured value names something not installed; KDE is silently falling back |
 
-`7/7 ok` means the metadata agrees with itself. It is **not** evidence that
+`9/9 ok` means the metadata agrees with itself. It is **not** evidence that
 anything is visible on your screen. When this tool says everything is fine and
 your desktop disagrees, your desktop is right.
+
+Nine rows, ten declarable components. The tenth is the wallpaper, and it is
+`prune`'s rather than `doctor`'s — see below.
 
 ## Why this needs a tool at all
 
@@ -143,6 +151,13 @@ Nothing about KDE theming is one thing.
   the half that no longer has any themes in it. KWin loads your decoration
   anyway, so it looks right — while System Settings shows nothing selected,
   which looks exactly like "window decorations are broken on this machine".
+- **Nine of the thirteen themes installed here declare a task switcher that
+  does not exist.** They all name `org.kde.breeze.desktop`, which was a Plasma 5
+  spelling; Plasma 6 moved switchers to their own package type and Breeze
+  stopped shipping one. `plasma-apply-lookandfeel` copies the dead name into
+  your config anyway, and — this is the good part — it copies it into a
+  *different group* than the one the theme declared it in. Nothing reports any
+  of this, and nothing is actually wrong. Kubuntu's own three themes do it too.
 - **`kwriteconfig6` can exit 0 and write nothing**, when the value already
   matches an inherited default. Indistinguishable from a failed write.
 - **`kwriteconfig6 --delete` does not delete.** It writes a `Key[$d]` tombstone
@@ -163,6 +178,15 @@ with what the tool does about it. The measurements behind them are in
   a `RESTORE.md` whose undo script actually runs. Emptying that directory is a
   separate decision you make later.
 - Nothing is overwritten without `--force`.
+- **`apply` never touches your desktop layout.** KDE's own dialog splits a
+  global theme into "Appearance settings" (every box ticked) and "Layout
+  settings: Desktop layout" (unticked) — the second replaces your panels,
+  widgets, their arrangement and the wallpaper with the theme author's. On the
+  command line that is `plasma-apply-lookandfeel --resetLayout`. This tool does
+  not pass it, and there is no flag to make it: a prompt you can say yes to is
+  a thing that gets said yes to, and it is the one part of applying a theme
+  that no snapshot here can put back. Use System Settings if you actually want
+  the author's panels.
 - Third-party archives are unpacked per-member with traversal guards, and every
   name arriving over the network is reduced to a single path component before
   it touches the filesystem. A store entry titled `..` was once enough to make
@@ -207,8 +231,8 @@ issue — the failure modes above are guesses, not observations.
 - Themes declaring no `X-KPackage-Dependencies` cannot be repaired
   automatically — `check` still tells you exactly what is missing.
 - Store downloads are signed and time-limited; a failed download is worth retrying.
-- Restore covers the seven theme pointers and the decoration group. Kvantum's
-  own config, the panel layout (`appletsrc`) and the generated GTK/xsettingsd
+- Restore covers the theme pointers and the decoration group. Kvantum's own
+  config, the panel layout (`appletsrc`) and the generated GTK/xsettingsd
   bridge files are captured but never written back
   ([`docs/restore-design.md`](docs/restore-design.md) §8).
 - It is **not a backup system**, and a theme tool that half-implements one is

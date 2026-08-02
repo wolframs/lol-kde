@@ -12,6 +12,7 @@ Three outcomes:
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -382,7 +383,110 @@ def splash(name: str) -> Resolution:
     return r
 
 
+# A task switcher layout is a KPackage of type `KWin/WindowSwitcher`, installed
+# to `<data dir>/kwin/tabbox/<id>/` and served by the store as
+# `kwinswitcher.knsrc`. The id is `KPlugin.Id` in the package's metadata.json,
+# which is not obliged to match the directory name.
+TABBOX_SUBDIR = "kwin/tabbox"
+
+# Plasma 5 named the stock switcher after the look-and-feel package that
+# supplied it -- `contents/windowswitcher/WindowSwitcher.qml` lived inside the
+# global theme. Plasma 6 moved switchers to their own KPackage type and no
+# look-and-feel package carries the payload any more, so these names resolve to
+# nothing and KWin uses its built-in switcher. That *is* the stock switcher,
+# which is what they were asking for, so it is not a fault.
+STOCK_SWITCHERS = {
+    "org.kde.breeze.desktop",
+    "org.kde.breezedark.desktop",
+    "org.kde.breezetwilight.desktop",
+    "org.kde.oxygen",
+}
+
+
+def _tabbox_id(package: Path) -> str:
+    """`KPlugin.Id` from a switcher package, falling back to its directory name."""
+    try:
+        metadata = json.loads((package / "metadata.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return package.name
+    plugin = metadata.get("KPlugin") if isinstance(metadata, dict) else None
+    found = plugin.get("Id") if isinstance(plugin, dict) else None
+    return found.strip() if isinstance(found, str) and found.strip() else package.name
+
+
+def tabbox_layouts() -> dict[str, Path]:
+    """Every installed task-switcher layout, by plugin id, most-specific first."""
+    found: dict[str, Path] = {}
+    for directory in paths.data_dirs():
+        base = directory / TABBOX_SUBDIR
+        if not base.is_dir():
+            continue
+        for child in sorted(p for p in base.iterdir() if p.is_dir()):
+            found.setdefault(_tabbox_id(child), child)
+    return found
+
+
+def window_switcher(name: str) -> Resolution:
+    """KWin's task switcher (Alt+Tab), declared as `[WindowSwitcher] LayoutName`.
+
+    Nine of the thirteen look-and-feel packages on this machine declare
+    `org.kde.breeze.desktop` here, and not one of them ships a switcher: the
+    line is a Plasma 5 template that every theme built from it still carries,
+    Kubuntu's own included. `plasma-apply-lookandfeel` copies it into
+    `[TabBox] LayoutName` without checking whether it resolves.
+
+    That case is deliberately `OK` -- see STOCK_SWITCHERS. A name that is
+    neither a stock spelling nor an installed layout is the real failure, and
+    it is fetchable: `kwinswitcher.knsrc`, `Uncompress=kpackage`.
+    """
+    r = Resolution("window-switcher", "Task switcher", name, MISSING)
+    if not name:
+        r.status = OK
+        return r
+    hit = tabbox_layouts().get(name)
+    if hit:
+        r.status, r.path = OK, hit
+        return r
+    if name in STOCK_SWITCHERS or _search("plasma/look-and-feel", name):
+        r.status = OK
+        r.detail = ("Plasma 5 spelling for the stock switcher; KWin uses its "
+                    "built-in one, which is what this asks for")
+        return r
+    r.detail = "no task switcher layout with this id is installed"
+    return r
+
+
+def desktop_switcher(name: str) -> Resolution:
+    """The virtual-desktop switcher a theme declares. Plasma 6 has no consumer.
+
+    `KWin/DesktopSwitcher` is not a registered KPackage structure on Plasma
+    6.6 -- `kpackagetool6 --type KWin/DesktopSwitcher --list` reports the
+    *type* as not found -- and the look-and-feel applier drops the key instead
+    of writing it anywhere. So there is no live value to compare against and
+    nothing to install. Reported at all because a theme declaring an exotic
+    value here is promising something it cannot deliver.
+    """
+    r = Resolution("desktop-switcher", "Desktop switcher", name, DEGRADED)
+    if not name or name in STOCK_SWITCHERS or _search("plasma/look-and-feel", name):
+        r.status = OK
+        return r
+    r.detail = ("Plasma 6 has no KWin/DesktopSwitcher package type and its "
+                "theme applier never writes this key: declared, inert, and "
+                "nothing to install")
+    return r
+
+
 def wallpaper(name: str) -> Resolution:
+    """Resolve a wallpaper name. Not reachable from `audit`, and deliberately.
+
+    The wallpaper is one of the ten things a `contents/defaults` can name, but
+    its live value is not a pointer: it is a per-containment `file://` URL
+    inside `plasma-org.kde.plasma.desktop-appletsrc`, which this tool captures
+    and never writes back. KDE draws the same line, filing the wallpaper under
+    "Desktop layout" rather than appearance. `prune` owns it instead, via
+    `prune.locate`. Kept because `check` grew a wallpaper row twice and will
+    again the moment appletsrc becomes writable.
+    """
     r = Resolution("wallpaper", "Wallpaper", name, MISSING)
     if not name:
         r.status = OK
@@ -407,6 +511,23 @@ SIMPLE_POINTERS = {
     ("kcminputrc", "Mouse", "cursorTheme"): cursor_theme,
     ("plasmarc", "Theme", "name"): plasma_style,
     ("ksplashrc", "KSplash", "Theme"): splash,
+    ("kwinrc", "WindowSwitcher", "LayoutName"): window_switcher,
+    ("kwinrc", "DesktopSwitcher", "LayoutName"): desktop_switcher,
+}
+
+# Where a declared pointer is actually *read* from, when that is not the group
+# the theme writes it in. The switchers are the only pointers where the two
+# differ: `plasma-apply-lookandfeel` reads `[WindowSwitcher] LayoutName` out of
+# a manifest and writes `[TabBox] LayoutName`, which is the only one KWin
+# reads. Comparing declared against live in the manifest's own group reported
+# an applied switcher as `unset` on every theme that declares one.
+#
+# `[DesktopSwitcher] LayoutName` maps to None: Plasma 6 reads it from nowhere,
+# so there is no live value and `unset` would be a lie. Rows for a None
+# mapping are built from the declared value instead -- see `audit`.
+LIVE_POINTERS: dict[tuple[str, str, str], tuple[str, str, str] | None] = {
+    ("kwinrc", "WindowSwitcher", "LayoutName"): ("kwinrc", "TabBox", "LayoutName"),
+    ("kwinrc", "DesktopSwitcher", "LayoutName"): None,
 }
 
 # Labels for pointers that are declared but unset, where we have no value to
@@ -418,6 +539,8 @@ POINTER_LABELS = {
     ("kcminputrc", "Mouse", "cursorTheme"): "Cursor theme",
     ("plasmarc", "Theme", "name"): "Plasma style",
     ("ksplashrc", "KSplash", "Theme"): "Splash screen",
+    ("kwinrc", "WindowSwitcher", "LayoutName"): "Task switcher",
+    ("kwinrc", "DesktopSwitcher", "LayoutName"): "Desktop switcher",
 }
 
 
@@ -449,13 +572,26 @@ DRIFT = "DRIFT"
 
 
 def pointer_kinds() -> int:
-    """How many component pointers a global theme can declare.
+    """How many component pointers this tool resolves.
 
     Computed, never written down. A hardcoded count in the banner drifted from
     the code the moment a splash-screen pointer was added, and the tool ended
-    up describing six things while verifying seven.
+    up describing six things while verifying seven. It happened a second time
+    with the two switchers, which no version of this tool saw until 2026-08-03.
+
+    One short of what a `contents/defaults` can name: the wallpaper is the
+    tenth, and it is `prune`'s rather than `doctor`'s. Its live value is not a
+    pointer at all -- it is a per-containment `file://` URL inside
+    `plasma-org.kde.plasma.desktop-appletsrc`, which is layout state this tool
+    captures and never writes back. KDE draws the same line, filing the
+    wallpaper under "Desktop layout" in its own apply dialog.
     """
     return len(SIMPLE_POINTERS) + 1        # + the window decoration
+
+
+def declarable_kinds() -> int:
+    """How many components a `contents/defaults` can name at all."""
+    return pointer_kinds() + 1             # + the wallpaper, which prune owns
 
 
 def _same_pointer(kind: str, a: str, b: str) -> bool:
@@ -488,10 +624,14 @@ class AuditRow:
     live: str | None
     resolution: Resolution | None
     note: str = ""
+    # Declared by the theme, but this Plasma reads the key from nowhere. Such a
+    # row has no live value and must not be reported `unset`, which would mean
+    # "something should have set this" -- nothing can.
+    inert: bool = False
 
     @property
     def status(self) -> str:
-        if self.live is None:
+        if self.live is None and not self.inert:
             return UNSET
         return self.resolution.status if self.resolution else OK
 
@@ -526,7 +666,21 @@ def audit(
     for key, resolver in SIMPLE_POINTERS.items():
         config_file, group, option = key
         declared_value = declared.get((config_file, group), {}).get(option)
-        live_value = live.get((config_file, group), {}).get(option)
+
+        live_key = LIVE_POINTERS.get(key, key)
+        if live_key is None:
+            if declared_value:
+                rows.append(AuditRow(
+                    label=POINTER_LABELS[key],
+                    declared=declared_value,
+                    live=None,
+                    resolution=resolver(declared_value),
+                    inert=True,
+                ))
+            continue
+
+        live_file, live_group, live_option = live_key
+        live_value = live.get((live_file, live_group), {}).get(live_option)
         if not declared_value and not live_value:
             continue
 

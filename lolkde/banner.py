@@ -24,8 +24,14 @@ NUMERALS = {5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten"}
 
 
 def _count() -> str:
+    """How many things a Global Theme *names* -- not how many we resolve.
+
+    The notice is a claim about the theme, so it counts what a
+    `contents/defaults` can declare. `pointer_kinds()` is one lower: the
+    wallpaper is `prune`'s to determine, not `doctor`'s.
+    """
     from . import resolve
-    n = resolve.pointer_kinds()
+    n = resolve.declarable_kinds()
     return NUMERALS.get(n, str(n))
 
 

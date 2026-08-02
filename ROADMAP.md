@@ -8,7 +8,7 @@ memory. If you defer something, it goes here.
 
 | feature | command | notes |
 |---|---|---|
-| Resolve a theme's pointers | `check`, `doctor` | seven components, cascade-aware |
+| Resolve a theme's pointers | `check`, `doctor` | nine of the ten a manifest can name, cascade-aware |
 | Install dependencies from a store URL | `please`, `install` | walks the description *and* the manifest |
 | Report and remove legacy metadata | `legacy [--remove]` | never removes anything still referenced |
 | Repair the Aurorae plugin name | inside `apply` | Plasma 6.6 split `org.kde.kwin.aurorae` |

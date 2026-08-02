@@ -12,6 +12,99 @@ Wolfram. Turn 1 is the first message after the context compaction on
 
 ---
 
+## Turn 16 — it was never seven
+
+### repo
+
+No machine changes. **241 tests.**
+
+Wolfram, reading the README: *"Wait, didn't we at some point discover that
+there's up to 10 things that can be bundled in a theme?"* Yes. The tool had
+been describing seven since it was written, and enumerating every key across
+all thirteen look-and-feel packages on this machine found ten.
+
+The three it had never seen:
+
+| declared as | why it was missed |
+|---|---|
+| `[kwinrc][WindowSwitcher] LayoutName` | nothing in the codebase mentioned switchers |
+| `[kwinrc][DesktopSwitcher] LayoutName` | same |
+| `[Wallpaper] Image` | `prune` knew it; `resolve.wallpaper()` existed and **was called from nowhere** |
+
+The switchers are now resolved, audited, restored and pruned. The wallpaper
+stays `prune`'s deliberately — see below.
+
+### Three KDE facts, all measured
+
+- **Nine of the thirteen themes here declare a task switcher that does not
+  exist**, Kubuntu's own three included. They all name `org.kde.breeze.desktop`,
+  which was a Plasma 5 spelling for "the switcher inside that look-and-feel
+  package". Plasma 6 moved switchers to their own KPackage type and no
+  look-and-feel package ships `contents/windowswitcher/` any more — Breeze
+  included, which is why Breeze declares no switcher while every theme copied
+  from a Plasma 5 template still does. `kpackagetool6 --type
+  KWin/WindowSwitcher --show org.kde.breeze.desktop` → "Can't find plugin
+  metadata". `plasma-apply-lookandfeel` copies it into the live config anyway.
+  `~/.config/kdedefaults/kwinrc` on this machine holds one right now.
+- **The switcher is declared in one group and read from another.** The applier
+  reads `[WindowSwitcher] LayoutName` from the manifest and writes
+  `[TabBox] LayoutName`, the only one KWin reads. No other pointer does this.
+  Auditing the declared group against live would have reported every applied
+  switcher `unset` forever, so `resolve.LIVE_POINTERS` maps declared → live and
+  `restore` replays the key KWin actually reads.
+- **`KWin/DesktopSwitcher` is not a registered package structure on Plasma
+  6.6.** Not "none installed" — the *type* is gone, and the applier drops the
+  key. Never reported `unset`, because nothing could have set it.
+
+The stock Plasma 5 spellings resolve `ok`, not `MISS`. KWin's built-in switcher
+is exactly what the line asks for, so nothing is lost, and a permanent red mark
+on almost every theme in the store for something the user cannot fix is worse
+than silence. The explanation is there under `-v`.
+
+### The layout question
+
+Wolfram asked whether `apply` should confirm before touching anything that
+affects layout, since KDE's own dialog does — "Layout settings: Desktop layout"
+ships unticked while every appearance box is ticked.
+
+It already does the safe thing: `apply` runs `plasma-apply-lookandfeel --apply
+<name>` and has never passed `--resetLayout`. That was invisible and read as an
+oversight, so it is now a comment at the call site, a section in
+`docs/how-it-works.md`, a README bullet, and `TestApplyNeverResetsTheLayout`,
+which scans every module for the flag.
+
+No confirmation added. The flag replaces your panels, widgets, their
+arrangement and the wallpaper, it is the one part of applying a theme no
+snapshot here can undo (`appletsrc` is captured and never written back), and a
+prompt you can say yes to is a thing that gets said yes to. Not offering it is
+the stronger guarantee.
+
+That same split is why the wallpaper is declarable but not audited: its live
+value is a per-containment `file://` URL in
+`plasma-org.kde.plasma.desktop-appletsrc`, which is layout state. KDE files it
+under "Desktop layout" for the same reason.
+
+### Counts, and one word doing two jobs
+
+- `resolve.pointer_kinds()` is now 9; new `declarable_kinds()` is 10, and the
+  banner uses the latter — the notice is a claim about the *theme*, not about
+  what this tool resolves. A test asserts they stay exactly one apart, so if
+  the wallpaper ever becomes auditable the two converge instead of drifting.
+  The hardcoded-count bug this machinery exists to prevent had happened twice:
+  "six" while `apply` verified seven, then "seven" while a manifest named ten.
+- `please --dry-run` said "10 components in total", meaning store packages to
+  fetch, while `doctor` says "component" for theme pointers. Same word, two
+  meanings, and the collision is what made ten sound like a pointer count. The
+  dry run now says **packages**.
+
+### Revert
+
+```sh
+git -C ~/Projects/lol-kde revert <sha>   # repo-only; nothing was written live
+```
+
+---
+
 ## Turn 15 — three reviews, and a README that is true
 
 ### repo

@@ -40,6 +40,7 @@ POINTERS = [
     ("decoration", ("kwinrc", "org.kde.kdecoration2", "theme")),
     ("splash", ("ksplashrc", "KSplash", "Theme")),
     ("wallpaper", ("plasmarc", "Wallpaper", "Image")),
+    ("switcher", ("kwinrc", "WindowSwitcher", "LayoutName")),
 ]
 
 # The wallpaper and the splash are written as **bare** groups in every real
@@ -84,6 +85,14 @@ def locate(kind: str, name: str) -> list[Path]:
         return [data / "aurorae/themes" / name.replace(resolve.AURORAE_PREFIX, "")]
     if kind == "wallpaper":
         return [data / "wallpapers" / name]
+    if kind == "switcher":
+        # The declared name is a KPackage id, and a package is not obliged to
+        # live in a directory of that name. Ask `resolve` for the mapping and
+        # keep only what is under the user's data home -- a theme naming the
+        # Plasma 5 stock switcher resolves to nothing at all, which is right:
+        # there is no directory to quarantine.
+        hit = resolve.tabbox_layouts().get(name)
+        return [hit] if hit and data in hit.parents else []
     if kind == "colour-scheme":
         base = data / "color-schemes"
         hits = [base / f"{name}.colors"]

@@ -13,8 +13,90 @@ automatically.
 ## KDE architecture facts
 
 **A Global Theme is a manifest of pointers, not a theme.** `contents/defaults`
-names up to seven components. If a name does not resolve, KDE substitutes a
+names up to ten components. If a name does not resolve, KDE substitutes a
 default silently — no error, no warning, nothing in System Settings.
+
+The ten, measured across all thirteen look-and-feel packages installed here:
+
+| declared as | component |
+|---|---|
+| `[kdeglobals][KDE] widgetStyle` | widget style |
+| `[kdeglobals][General] ColorScheme` | colour scheme |
+| `[kdeglobals][Icons] Theme` | icon theme |
+| `[kcminputrc][Mouse] cursorTheme` | cursor theme |
+| `[plasmarc][Theme] name` | Plasma style |
+| `[KSplash] Theme` | splash screen |
+| `[kwinrc][org.kde.kdecoration2] theme` + `library` | window decoration |
+| `[kwinrc][WindowSwitcher] LayoutName` | task switcher |
+| `[kwinrc][DesktopSwitcher] LayoutName` | desktop switcher — see below |
+| `[Wallpaper] Image` | wallpaper |
+
+The splash and the wallpaper are written as **bare** groups in every real
+manifest, never as `[ksplashrc][KSplash]` / `[plasmarc][Wallpaper]`.
+
+**KDE's own apply dialog splits these into two classes**, and the split is not
+cosmetic. "Appearance settings" — colours, application style, window
+decoration, icons, Plasma style, cursors, task switcher, splash — ships with
+every box ticked. "Layout settings: Desktop layout" ships **unticked**, and it
+is the one that replaces your panels, widgets, their arrangement and the
+wallpaper with the theme author's. On the command line that box is
+`plasma-apply-lookandfeel --resetLayout`.
+
+That is why the wallpaper is in the table but is not a pointer: its live value
+is not in `plasmarc` at all. It is a per-containment `file://` URL inside
+`plasma-org.kde.plasma.desktop-appletsrc` —
+
+```
+[Containments][1][Wallpaper][org.kde.image][General]
+Image=file:///home/…/.local/share/wallpapers/Layan
+```
+
+— which is layout state, not configuration.
+
+**`[WindowSwitcher] LayoutName` is read from one group and written to another.**
+The look-and-feel applier reads `[kwinrc][WindowSwitcher] LayoutName` out of
+the manifest and writes `[kwinrc][TabBox] LayoutName`, which is the only one
+KWin reads. Auditing the declared group against the live config in that same
+group reports every applied switcher as `unset`, forever. No other pointer
+does this.
+
+**Nine of the thirteen themes here declare a task switcher that does not
+exist.** They all name `org.kde.breeze.desktop`, Kubuntu's own three included.
+Under Plasma 5 a `LayoutName` named a *look-and-feel* package, which supplied
+`contents/windowswitcher/WindowSwitcher.qml`. Plasma 6 moved switchers to their
+own KPackage type (`KWin/WindowSwitcher`, installed to
+`<data dir>/kwin/tabbox/<id>/`, sold as `kwinswitcher.knsrc`) and **no
+look-and-feel package on this machine ships a `windowswitcher/` directory any
+more** — Breeze included, which is why Breeze itself declares no switcher while
+every theme copied from a Plasma 5 template still does.
+
+```
+$ kpackagetool6 --type KWin/WindowSwitcher --show org.kde.breeze.desktop
+Error: Can't find plugin metadata: org.kde.breeze.desktop
+$ kpackagetool6 --type KWin/WindowSwitcher --show big_icons
+  Name : Large Icons
+  Path : /usr/share/kwin/tabbox/big_icons/
+```
+
+`plasma-apply-lookandfeel` copies the dead id into `[TabBox] LayoutName`
+without checking, KWin cannot load it and uses its built-in switcher, and
+nothing anywhere says so. The user loses nothing — the built-in switcher is
+what the line was asking for — so this is not a fault, and `resolve.py` treats
+the stock Plasma 5 spellings as `ok`. The id is `KPlugin.Id` in the package's
+`metadata.json`, which is not obliged to match the directory name.
+
+**`KWin/DesktopSwitcher` does not exist on Plasma 6.6 at all.** Not "no
+packages installed" — the package *structure* is unregistered:
+
+```
+$ kpackagetool6 --type KWin/DesktopSwitcher --list
+kf.package: Invalid metadata for package structure "KWin/DesktopSwitcher"
+Package type "KWin/DesktopSwitcher" not found
+```
+
+The applier drops the key rather than writing it anywhere, so there is no live
+value to compare against and nothing to install. A theme declaring it is
+promising something this Plasma cannot deliver.
 
 **Config is a cascade; global themes write to `kdedefaults`.** Applying a global
 theme writes to `~/.config/kdedefaults/*`, not `~/.config/*`, so user overrides
@@ -184,8 +266,8 @@ list and the model adds them as themselves.
 - It is a **style engine**, not a style. `widgetStyle=kvantum` succeeds with no
   theme installed and renders flat grey.
 - It keeps its own theme selection in `~/.config/Kvantum/kvantum.kvconfig`.
-  **Applying a global theme does not touch it.** You can have all seven
-  components report `ok` while window interiors render a previous theme.
+  **Applying a global theme does not touch it.** Every component can report
+  `ok` while window interiors render a previous theme.
 - **`reduce_window_opacity` is the translucency knob.** `translucent_windows=true`
   only enables the mechanism; themes ship it `true` with `reduce_window_opacity=0`
   and render fully opaque. This single integer was the answer to "nothing is ever

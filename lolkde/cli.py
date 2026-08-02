@@ -96,7 +96,8 @@ def _print_audit(rows: list[resolve.AuditRow], verbose: bool) -> dict[str, int]:
         drifted = bool(row.note) and status == OK
         mark = _mark("unset" if status == resolve.UNSET
                      else "drift" if drifted else status)
-        value = _paint("(not set)", "2") if status == resolve.UNSET else (row.live or "")
+        value = (_paint("(not set)", "2") if status == resolve.UNSET
+                 else (row.live or row.declared or ""))
 
         print(f"  {mark}  {row.label:<18} {value}")
         detail = row.note or (row.resolution.detail if row.resolution else "")
@@ -324,8 +325,12 @@ def cmd_please(args: argparse.Namespace) -> int:
     extra = len(nodes) - 1
     print(f"\n{root.item.name}  {_paint(root.item.typename, '2')}")
     if extra:
+        # "package", not "component": `doctor` uses "component" for the ten
+        # things a theme's manifest can *name*, and this is a count of store
+        # items to *fetch*. The same word for both made "10 components" in a
+        # dry run read as "your theme declares ten pointers".
         print(_paint(f"The description names {extra} further "
-                     f"component{'s' if extra != 1 else ''}:", "2"))
+                     f"package{'s' if extra != 1 else ''}:", "2"))
 
     for node in nodes[1:]:
         _print_component(node)
@@ -335,7 +340,7 @@ def cmd_please(args: argparse.Namespace) -> int:
         for node in extra_nodes:
             _print_component(node)
         total = len(nodes) + len(extra_nodes)
-        print(_paint(f"\nDry run: nothing installed. {total} component"
+        print(_paint(f"\nDry run: nothing installed. {total} package"
                      f"{'s' if total != 1 else ''} in total.", "2"))
         return 0
 
@@ -539,6 +544,20 @@ def cmd_apply(args: argparse.Namespace) -> int:
             "settings survive. Logging out and back in avoids it entirely.\n", "33"))
 
     auto_snapshot(f"before apply {theme.name}")
+    # Deliberately no `--resetLayout`, and there is no flag to add it.
+    #
+    # KDE's own apply dialog splits a global theme in two: "Appearance
+    # settings" (colours, style, decoration, icons, plasma style, cursors, task
+    # switcher, splash), every box ticked, and "Layout settings: Desktop
+    # layout", unticked. The second one wipes your panels, widgets, their
+    # arrangement and the wallpaper, and replaces them with the theme author's.
+    # That is not a theme change, it is throwing away work, and it is the one
+    # part of applying a theme that no snapshot in this tool can put back --
+    # `appletsrc` is captured and never written (docs/restore-design.md §8).
+    #
+    # So this tool does not offer it rather than offering it behind a
+    # confirmation. A prompt you can say yes to is a thing that gets said yes
+    # to. Use System Settings if you actually want the author's panel layout.
     completed = subprocess.run([tool, "--apply", theme.name], text=True)
     if completed.returncode != 0:
         return completed.returncode

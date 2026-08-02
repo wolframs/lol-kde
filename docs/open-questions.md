@@ -104,6 +104,28 @@ one this session is running inside.
 | Konsole's `Translucent` profile renders translucent | new file; `konsole --list-profiles` sees it, but a rendered window has not been observed. `Blur=true` in the scheme depends on KWin's blur effect, which *is* loaded | open a new Konsole window |
 | `Opacity` in a `.colorscheme` is what Konsole actually reads | taken from the shipped `kubuntu-black.colorscheme`, which carries `Opacity=1`. Consistent, but only one sample | set `Opacity=0.5` briefly and look |
 
+## Settled on turn 16 — a `contents/defaults` names ten things, not seven
+
+Enumerating every key across all thirteen look-and-feel packages installed here
+found three the tool had never modelled: the task switcher, the desktop
+switcher and the wallpaper. The measurements are in
+[`kde-notes.md`](kde-notes.md); the design consequences are in
+[`how-it-works.md`](how-it-works.md).
+
+Two of the three are now audited. The wallpaper is deliberately not: its live
+value is a per-containment `file://` URL inside
+`plasma-org.kde.plasma.desktop-appletsrc`, which is layout state this tool
+captures and never writes back. `prune` tracks it so a removal cannot
+quarantine the image the desktop is painting.
+
+What is still open about them:
+
+| claim | why it is not verified | settles it |
+|---|---|---|
+| a real third-party switcher layout installs correctly from `kwinswitcher.knsrc` | no theme on this machine names one, so the `Uncompress=kpackage` path for `KWin/WindowSwitcher` has never run | `lol-kde install` a theme that declares a store-hosted switcher |
+| KWin falls back *silently* when `[TabBox] LayoutName` names nothing | inferred from the id resolving to no package while the switcher visibly works; no KWin log line was read | `journalctl --user -u plasma-kwin_wayland` while setting a junk `LayoutName` on a disposable session |
+| `[DesktopSwitcher] LayoutName` is dropped rather than written somewhere unexamined | only `[TabBox]` was checked in `kdedefaults/kwinrc` after an apply | diff the whole `kdedefaults` tree across one `plasma-apply-lookandfeel` run |
+
 ## Measurement caveats
 
 | claim | caveat |

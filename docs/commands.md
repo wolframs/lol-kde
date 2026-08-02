@@ -136,17 +136,44 @@ Applied global theme: Sweet-Ambar-Blue
          theme declares 'Sweet-cursors' but nothing set it; KDE default in use
   ok     Plasma style       Sweet-Ambar-Blue
   ok     Splash screen      Sweet-Ambar-Blue
+  ok     Task switcher      org.kde.breeze.desktop
+  ok     Desktop switcher   org.kde.breeze.desktop
   unset  Window decoration  (not set)
          theme declares 'Sweet-ambar-blue' but nothing set it; KDE default in use
 
-5/7 ok, 2 unset
+7/9 ok, 2 unset
 
 Repair: lol-kde install Sweet-Ambar-Blue   # fetch missing pieces
         lol-kde apply Sweet-Ambar-Blue     # reset unset/drifted pointers
 ```
 
-Seven components, not six -- `doctor` prints one row per pointer a global
-theme can declare.
+Nine rows, one per pointer -- and ten things a `contents/defaults` can name.
+The number is computed from the pointer tables rather than written down,
+because it has now drifted twice: the banner said "six" while `apply` verified
+seven, and then "seven" while a manifest could name ten.
+
+The tenth is the **wallpaper**, and it belongs to `prune`, not to `doctor`. Its
+live value is not a pointer -- it is a per-containment `file://` URL inside
+`plasma-org.kde.plasma.desktop-appletsrc`, which is layout state this tool
+captures and never writes back. KDE draws the same line, filing the wallpaper
+under "Desktop layout" in its own apply dialog rather than under appearance.
+
+The two **switchers** are new as of 2026-08-03 and are worth knowing about:
+
+- `[WindowSwitcher] LayoutName` is the only pointer read from a different group
+  than the theme declares it in. `plasma-apply-lookandfeel` reads
+  `[WindowSwitcher]` from the manifest and writes `[TabBox]`, which is the only
+  one KWin reads. `doctor` compares against `[TabBox]`; `restore` replays it.
+- Nine of the thirteen themes installed here declare `org.kde.breeze.desktop`,
+  which resolves to no package at all -- it is a Plasma 5 spelling for the
+  stock switcher, and KWin's built-in one is exactly what it was asking for.
+  Reported `ok`, with the explanation under `-v`. A name that is neither a
+  stock spelling nor an installed layout reports `MISS`, and is fetchable:
+  `kwinswitcher.knsrc`.
+- `[DesktopSwitcher] LayoutName` has no consumer on Plasma 6 -- the
+  `KWin/DesktopSwitcher` package type is unregistered and the applier drops the
+  key. It is never reported `unset`, because nothing could have set it. An
+  exotic value gets `warn` and says there is nothing to install.
 
 ### Statuses
 
@@ -215,7 +242,7 @@ That is machine-readable enough.
 $ lol-kde please https://www.opendesktop.org/p/1325243
 
 Layan look and feel theme  Global Themes (Plasma 6)
-The description names 4 further components:
+The description names 4 further packages:
   +  Layan kvantum theme    Kvantum                 ~/.config/Kvantum
   +  Layan gtk theme        GTK3/4 Themes           ~/.themes
   +  Tela-icon-theme        Full Icon Themes        ~/.local/share/icons
@@ -223,7 +250,7 @@ The description names 4 further components:
 ```
 
 It then reconciles that list against the package's `X-KPackage-Dependencies`,
-because the two disagree: Layan's description names 4 components, its manifest
+because the two disagree: Layan's description names 4 packages, its manifest
 names 7, and only the manifest mentions the cursor theme. Result is 6/6
 resolved from one URL.
 
@@ -241,7 +268,7 @@ Fetching the package to read its manifest (temporary directory, nothing installe
   +  Layan sddm theme       SDDM Login Themes      /usr/share/sddm/themes  (needs root; will be skipped)
   +  Layan cursors          Cursors                ~/.icons
 
-Dry run: nothing installed. 10 components in total.
+Dry run: nothing installed. 10 packages in total.
 ```
 
 The manifest is inside the package, so reading it means fetching the package —

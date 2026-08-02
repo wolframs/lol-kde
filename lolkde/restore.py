@@ -66,18 +66,29 @@ def store() -> Path:
 def components() -> dict[str, list[tuple[str, str, str]]]:
     """Named bundles of (file, group, key), derived rather than transcribed.
 
-    `resolve.SIMPLE_POINTERS` is the source of truth for six of the seven
-    pointers; the decoration pair lives in its own group and is added here.
-    A hardcoded list drifted once already, which is why `pointer_kinds()`
-    exists at all.
+    `resolve.SIMPLE_POINTERS` is the source of truth for every pointer but the
+    decoration pair, which lives in its own group and is added here. A
+    hardcoded list drifted once already, which is why `pointer_kinds()` exists
+    at all.
+
+    Restore replays *live* keys, so each pointer is translated through
+    `resolve.LIVE_POINTERS` first. The task switcher is declared as
+    `[WindowSwitcher] LayoutName` and read as `[TabBox] LayoutName`; writing
+    back the declared spelling would restore a key KWin does not read. The
+    desktop switcher maps to None -- Plasma 6 stores it nowhere, so there is
+    nothing to snapshot and nothing to put back.
     """
     bundles: dict[str, list[tuple[str, str, str]]] = {}
     slug = {"Widget style": "widget-style", "Colour scheme": "colour-scheme",
             "Icon theme": "icons", "Cursor theme": "cursor",
-            "Plasma style": "plasma-style", "Splash screen": "splash"}
+            "Plasma style": "plasma-style", "Splash screen": "splash",
+            "Task switcher": "switcher"}
     for pointer in resolve.SIMPLE_POINTERS:
+        live = resolve.LIVE_POINTERS.get(pointer, pointer)
+        if live is None:
+            continue
         label = resolve.POINTER_LABELS[pointer]
-        bundles[slug.get(label, label.lower().replace(" ", "-"))] = [pointer]
+        bundles[slug.get(label, label.lower().replace(" ", "-"))] = [live]
     bundles["decoration"] = [
         ("kwinrc", repair.DECO_GROUP, "library"),
         ("kwinrc", repair.DECO_GROUP, "theme"),

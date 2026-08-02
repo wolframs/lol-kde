@@ -66,6 +66,58 @@ precisely like "window decorations are broken on this machine".
 `SweetAmbarBlue.colors`. Matching on filename produces false negatives; `lol-kde`
 matches on the internal `Name=` field, as KDE does.
 
+**The task switcher is declared in one group and read from another.** A theme
+writes `[kwinrc][WindowSwitcher] LayoutName`; `plasma-apply-lookandfeel` reads
+that and writes `[kwinrc][TabBox] LayoutName`, which is the only one KWin
+consults. No other pointer does this. Comparing the declared group against the
+live config in that same group reports every applied switcher as `unset`
+forever, so `lol-kde` keeps an explicit declared-to-live map
+(`resolve.LIVE_POINTERS`) and `restore` replays the key KWin reads.
+
+**Most themes declare a task switcher that does not exist, and that is fine.**
+Nine of the thirteen look-and-feel packages installed on the development
+machine name `org.kde.breeze.desktop` here — Kubuntu's own three included.
+Under Plasma 5 that named a *look-and-feel* package, which shipped
+`contents/windowswitcher/WindowSwitcher.qml`; Plasma 6 moved switchers to their
+own KPackage type and no look-and-feel package carries the payload any more,
+Breeze included. `kpackagetool6 --type KWin/WindowSwitcher --show
+org.kde.breeze.desktop` answers "Can't find plugin metadata".
+
+The applier copies the dead id anyway and KWin falls back to its built-in
+switcher — which is what the line was asking for, so nothing is lost.
+`lol-kde` reports the stock Plasma 5 spellings `ok` rather than `MISS`,
+because a permanent red mark on almost every theme in the store, for something
+the user cannot fix and has not lost, is worse than silence. The explanation is
+there under `-v`. A name that is neither a stock spelling nor an installed
+layout is a real miss, and is fetchable from `kwinswitcher.knsrc`.
+
+**The desktop switcher has no consumer on Plasma 6 at all.** Not "no packages
+installed" — `kpackagetool6 --type KWin/DesktopSwitcher --list` reports the
+package *structure* as unregistered, and the applier drops the key instead of
+writing it anywhere. There is no live value, so `lol-kde` never reports it
+`unset` (which would mean "something should have set this"). An exotic value
+gets `warn` and says plainly that there is nothing to install.
+
+**`apply` never resets your desktop layout.** KDE's own dialog splits a global
+theme into "Appearance settings" — colours, application style, window
+decoration, icons, Plasma style, cursors, task switcher, splash, every box
+ticked — and "Layout settings: Desktop layout", unticked. The second replaces
+your panels, widgets, their arrangement and the wallpaper with the theme
+author's. On the command line it is `plasma-apply-lookandfeel --resetLayout`.
+
+`lol-kde` does not pass it and offers no flag that would. That is deliberate
+rather than an omission: it is the one part of applying a theme that no
+snapshot here can put back (`appletsrc` is captured and never written —
+[`restore-design.md`](restore-design.md) §8), and a prompt you can say yes to
+is a thing that gets said yes to. A unit test scans every module to keep the
+flag out. Use System Settings if you actually want the author's panels.
+
+The same split is why the wallpaper is the one declarable component `doctor`
+does not audit: its live value is a per-containment `file://` URL inside
+`plasma-org.kde.plasma.desktop-appletsrc`, which is layout state. `prune`
+still tracks it, so removing a theme cannot quarantine the image your desktop
+is currently painting.
+
 **Cursors and icons have several search paths**, including the legacy
 `~/.icons`, and how many depends on `XDG_DATA_DIRS`. Checking only
 `~/.local/share/icons` will tell you something is missing when it is not.

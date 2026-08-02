@@ -560,6 +560,132 @@ class TestAudit(unittest.TestCase):
         self.assertEqual(rows[0].declared, "Sweet-ambar-blue")
 
 
+class TestSwitchers(unittest.TestCase):
+    """The two pointers no version of this tool saw until 2026-08-03.
+
+    Measured on the machine in README's "where this has actually been run":
+    nine of thirteen installed look-and-feel packages declare
+    `[kwinrc][WindowSwitcher] LayoutName=org.kde.breeze.desktop`, Kubuntu's own
+    three included, and `kpackagetool6 --type KWin/WindowSwitcher --show
+    org.kde.breeze.desktop` answers "Can't find plugin metadata".
+    """
+
+    def test_a_stock_plasma5_spelling_is_not_a_fault(self):
+        # Every theme built from a Plasma 5 template carries this line. KWin
+        # falls back to its built-in switcher, which is what the line asks for.
+        # Reporting it MISS would put a permanent red mark on almost every
+        # theme in the store for something the user cannot fix and has not lost.
+        for name in resolve.STOCK_SWITCHERS:
+            self.assertEqual(resolve.window_switcher(name).status, resolve.OK, name)
+            self.assertEqual(resolve.desktop_switcher(name).status, resolve.OK, name)
+
+    def test_an_unknown_layout_is_missing(self):
+        r = resolve.window_switcher("no-such-switcher-layout")
+        self.assertEqual(r.status, resolve.MISSING)
+
+    def test_an_installed_layout_resolves_by_plugin_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package = root / "kwin/tabbox/some_directory_name"
+            package.mkdir(parents=True)
+            # The id is KPlugin.Id, which is not obliged to match the
+            # directory. Matching on the directory name alone would report an
+            # installed layout as missing.
+            (package / "metadata.json").write_text(
+                json.dumps({"KPackageStructure": "KWin/WindowSwitcher",
+                            "KPlugin": {"Id": "declared_id"}}))
+            with unittest.mock.patch.object(paths, "data_dirs",
+                                            return_value=[root]):
+                self.assertEqual(resolve.tabbox_layouts(), {"declared_id": package})
+                r = resolve.window_switcher("declared_id")
+        self.assertEqual(r.status, resolve.OK)
+        self.assertEqual(r.path, package)
+
+    def test_a_package_without_metadata_falls_back_to_its_directory_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "kwin/tabbox/bare_dir").mkdir(parents=True)
+            with unittest.mock.patch.object(paths, "data_dirs",
+                                            return_value=[root]):
+                self.assertIn("bare_dir", resolve.tabbox_layouts())
+
+    def test_the_live_value_is_read_from_tabbox_not_the_declared_group(self):
+        # plasma-apply-lookandfeel reads [WindowSwitcher] out of the manifest
+        # and writes [TabBox]. Comparing declared against live in the
+        # manifest's own group reported every applied switcher as `unset`.
+        rows = resolve.audit(
+            declared={("kwinrc", "WindowSwitcher"): {"LayoutName": "big_icons"}},
+            live={("kwinrc", "TabBox"): {"LayoutName": "big_icons"}},
+        )
+        row = next(r for r in rows if r.label == "Task switcher")
+        self.assertNotEqual(row.status, resolve.UNSET)
+        self.assertEqual(row.live, "big_icons")
+        self.assertEqual(row.note, "")
+
+    def test_the_desktop_switcher_is_never_reported_unset(self):
+        # Nothing on Plasma 6 reads the key, so `unset` -- which means
+        # "something should have set this" -- would be a lie.
+        rows = resolve.audit(
+            declared={("kwinrc", "DesktopSwitcher"):
+                      {"LayoutName": "org.kde.breeze.desktop"}},
+            live={},
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0].inert)
+        self.assertEqual(rows[0].status, resolve.OK)
+        self.assertEqual(rows[0].declared, "org.kde.breeze.desktop")
+
+    def test_an_exotic_desktop_switcher_warns_rather_than_promising_a_fix(self):
+        rows = resolve.audit(
+            declared={("kwinrc", "DesktopSwitcher"): {"LayoutName": "Sliding"}},
+            live={},
+        )
+        self.assertEqual(rows[0].status, resolve.DEGRADED)
+        self.assertIn("nothing to install", rows[0].resolution.detail)
+
+    def test_the_declared_value_is_printed_when_there_is_no_live_one(self):
+        # An inert row has live=None. Printing `row.live or ""` left the
+        # column blank, so the row said nothing at all.
+        rows = resolve.audit(
+            declared={("kwinrc", "DesktopSwitcher"): {"LayoutName": "Sliding"}},
+            live={},
+        )
+        with unittest.mock.patch("sys.stdout", new=io.StringIO()) as out:
+            cli._print_audit(rows, verbose=False)
+        self.assertIn("Sliding", out.getvalue())
+
+
+class TestApplyNeverResetsTheLayout(unittest.TestCase):
+    """`apply` must never pass plasma-apply-lookandfeel's `--resetLayout`.
+
+    It replaces your panels, widgets, their arrangement and the wallpaper with
+    the theme author's. KDE's own dialog ships that box unticked while every
+    appearance box is ticked, and it is the one part of applying a theme that
+    no snapshot here can undo: `appletsrc` is captured and never written back
+    (docs/restore-design.md section 8).
+
+    A guard rather than a comment because the flag is one line away and looks
+    like completeness.
+    """
+
+    FLAG = "--reset" + "Layout"      # so this file does not match its own scan
+
+    def test_no_module_builds_the_flag(self):
+        root = Path(__file__).resolve().parent.parent / "lolkde"
+        for path in sorted(root.glob("*.py")):
+            source = path.read_text(encoding="utf-8")
+            for number, line in enumerate(source.splitlines(), 1):
+                if self.FLAG in line and not line.lstrip().startswith("#"):
+                    self.fail(f"{path.name}:{number} builds {self.FLAG}")
+
+    def test_apply_invokes_the_tool_with_the_theme_and_nothing_else(self):
+        source = inspect.getsource(cli.cmd_apply)
+        call = [line for line in source.splitlines()
+                if "subprocess.run" in line and not line.lstrip().startswith("#")]
+        self.assertEqual(len(call), 1, source)
+        self.assertIn('"--apply", theme.name', call[0])
+
+
 class TestKnsrc(unittest.TestCase):
     def test_known_categories_have_targets(self):
         for name in ("aurorae", "colorschemes", "icons", "xcursor", "wallpaper"):
@@ -731,12 +857,19 @@ class TestBanner(unittest.TestCase):
     def test_no_colour_means_no_escapes(self):
         self.assertNotIn("\033", banner.render(width_available=200, color=False))
 
-    def test_notice_count_matches_what_the_tool_actually_checks(self):
-        # The banner once said "six things" while apply verified seven.
-        # The number is now computed, and this asserts it stays honest.
-        spelled = banner.NUMERALS[resolve.pointer_kinds()]
+    def test_notice_count_matches_what_a_theme_can_declare(self):
+        # The banner once said "six things" while apply verified seven, and
+        # later "seven" while a contents/defaults could name ten. The number is
+        # computed from the pointer tables, and this asserts it stays honest.
+        spelled = banner.NUMERALS[resolve.declarable_kinds()]
         self.assertIn(spelled, " ".join(banner.notice()))
         self.assertIn(spelled, banner.subtitle())
+
+    def test_the_notice_counts_one_more_than_doctor_resolves(self):
+        # The wallpaper is declarable but is prune's, not doctor's: its live
+        # value is a per-containment URL in appletsrc, which this tool captures
+        # and never writes back. If that ever changes, the two must converge.
+        self.assertEqual(resolve.declarable_kinds(), resolve.pointer_kinds() + 1)
 
     def test_pointer_count_equals_the_audit_row_count(self):
         declared = {("kdeglobals", "KDE"): {"widgetStyle": "fusion"},
@@ -745,6 +878,8 @@ class TestBanner(unittest.TestCase):
                     ("kcminputrc", "Mouse"): {"cursorTheme": "X"},
                     ("plasmarc", "Theme"): {"name": "X"},
                     ("ksplashrc", "KSplash"): {"Theme": "X"},
+                    ("kwinrc", "WindowSwitcher"): {"LayoutName": "X"},
+                    ("kwinrc", "DesktopSwitcher"): {"LayoutName": "X"},
                     ("kwinrc", "org.kde.kdecoration2"): {"theme": "X"}}
         self.assertEqual(len(resolve.audit(declared, {})), resolve.pointer_kinds())
 
@@ -1236,7 +1371,22 @@ class TestRestoreComponents(unittest.TestCase):
         bundles = restore.components()
         pointers = {k for keys in bundles.values() for k in keys}
         for pointer in resolve.SIMPLE_POINTERS:
-            self.assertIn(pointer, pointers)
+            live = resolve.LIVE_POINTERS.get(pointer, pointer)
+            if live is None:      # Plasma 6 stores it nowhere; nothing to replay
+                continue
+            self.assertIn(live, pointers)
+
+    def test_restore_replays_the_key_kwin_reads_not_the_one_themes_declare(self):
+        # A theme declares `[WindowSwitcher] LayoutName`; the applier writes
+        # `[TabBox] LayoutName`, and that is the only one KWin reads. Restoring
+        # the declared spelling would put back a key nothing consults.
+        keys = restore.components()["switcher"]
+        self.assertEqual(keys, [("kwinrc", "TabBox", "LayoutName")])
+
+    def test_the_desktop_switcher_has_no_bundle(self):
+        # Plasma 6 has no KWin/DesktopSwitcher package type and its applier
+        # never writes the key, so there is nothing to snapshot or put back.
+        self.assertNotIn("desktop-switcher", restore.components())
 
     def test_the_decoration_bundle_carries_bordersize(self):
         # library, theme and BorderSize share a group, and BorderSize in the
@@ -2338,12 +2488,15 @@ class TestRestoreAbortPath(_RestoreFixture, unittest.TestCase):
 
 
 class TestPruneCanSeeEveryPointer(unittest.TestCase):
-    """Found by review 2026-08-02: prune was blind to two of seven components.
+    """Found by review 2026-08-02: prune was blind to two of the components.
 
     Every real `contents/defaults` writes the wallpaper and splash as **bare**
     groups -- `[Wallpaper]`, `[KSplash]` -- not `[plasmarc][Wallpaper]`. So
     `components()` returned neither kind for any theme ever installed, and
     `referenced_by()` could not see that a surviving theme needed a wallpaper.
+
+    Extended on 2026-08-03 with the task switcher, which prune could not see
+    either because nothing in the tool modelled switchers at all.
     """
 
     def _theme(self, root: Path, name: str, body: str) -> Path:
@@ -2380,6 +2533,30 @@ class TestPruneCanSeeEveryPointer(unittest.TestCase):
                 declared.setdefault(kind, []).append(name)
         self.assertIn("wallpaper", declared,
                       "no installed theme declares a wallpaper prune can see")
+        self.assertIn("switcher", declared,
+                      "no installed theme declares a task switcher prune can see")
+
+    def test_a_switcher_is_read_from_the_declared_group(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            theme = self._theme(
+                Path(tmp), "T",
+                "[kwinrc][WindowSwitcher]\nLayoutName=big_icons\n")
+            self.assertEqual(prune.components(theme)["switcher"][0], "big_icons")
+
+    def test_a_system_switcher_is_never_a_removal_candidate(self):
+        # `/usr` belongs to the package manager. `locate` keeps only paths
+        # under the user's data home, and the shipped layouts all live in
+        # /usr/share/kwin/tabbox -- so the list must come back empty even
+        # though the id resolves perfectly well.
+        for name in resolve.tabbox_layouts():
+            for path in prune.locate("switcher", name):
+                self.assertIn(paths.data_home(), path.parents, path)
+
+    def test_a_dead_plasma5_switcher_name_has_nothing_to_quarantine(self):
+        # The common case: nine themes here name org.kde.breeze.desktop, which
+        # resolves to no package at all. Returning the look-and-feel package
+        # that happens to share the name would quarantine a global theme.
+        self.assertEqual(prune.locate("switcher", "org.kde.breeze.desktop"), [])
 
 
 class TestPruneComparesPathsNotNames(unittest.TestCase):

@@ -53,7 +53,7 @@ restore mechanism.** Every manifest path carries a tier, stored as data:
 
 | tier | paths | mechanism | live-safe |
 |---|---|---|---|
-| **A — replay** | the seven component pointers across `kdeglobals`, `kwinrc`, `plasmarc`, `kcminputrc`, `ksplashrc` | `plasma-apply-lookandfeel` for the `kdedefaults` layer; `kwriteconfig6 --notify` / `--delete` for the user layer; then `KWin.reconfigure` | yes |
+| **A — replay** | the component pointers across `kdeglobals`, `kwinrc`, `plasmarc`, `kcminputrc`, `ksplashrc` | `plasma-apply-lookandfeel` for the `kdedefaults` layer; `kwriteconfig6 --notify` / `--delete` for the user layer; then `KWin.reconfigure` | yes |
 | **A — replay** | `kwinoutputconfig.json` | `kscreen-doctor output.<n>.scale.X` / `.position.X,Y` / `.mode.N`, plus `kwinrc [Xwayland] Scale` | yes |
 | **B — byte, owner must be stopped** | `~/.config/Kvantum/**/*.kvconfig` | atomic write. No KDE daemon owns these; the app must restart to notice | file yes, effect needs restart |
 | **C — capture only, never write** | `plasma-org.kde.plasma.desktop-appletsrc`, `gtkrc*`, `gtk-3.0/`, `gtk-4.0/`, `Trolltech.conf`, `xsettingsd/`, `dconf/user` | none — snapshot, diff, print, refuse | n/a |
@@ -67,7 +67,7 @@ Tier C splits into two reasons that must be **reported differently**:
   that race costs the panel layout.
 
 **Do not make "log out first" the primary mechanism.** It is honest and it makes
-restore useless for the case it exists for. Replay handles the seven components
+restore useless for the case it exists for. Replay handles the pointers
 live. Reserve session-off for tiers B and C, delivered as `--script`.
 
 **Never end the session yourself.** No `ksmserver.logout`. Print the
@@ -201,7 +201,12 @@ a write strategy and a verifier. Derive the bundles from
 `resolve.SIMPLE_POINTERS` plus the decoration pair — do not transcribe them.
 `resolve.pointer_kinds()` exists precisely because a hardcoded count drifted.
 
-Components: the seven pointers, plus `kvantum`, `outputs`, `lookandfeel`.
+Components: the pointers, plus `kvantum`, `outputs`, `lookandfeel`. Each
+bundle is named for the component, and holds the key KDE actually *reads* --
+the task switcher is declared as `[WindowSwitcher] LayoutName` and read as
+`[TabBox] LayoutName`, so the bundle carries the latter. Replaying the declared
+spelling would put back a key nothing consults. The desktop switcher gets no
+bundle at all: Plasma 6 stores it nowhere.
 
 Every key records **four** facts, not one: resolved value, originating layer,
 user-layer value or `ABSENT`, `kdedefaults`-layer value or `ABSENT`. That gives

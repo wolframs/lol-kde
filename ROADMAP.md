@@ -14,24 +14,9 @@ memory. If you defer something, it goes here.
 | Repair the Aurorae plugin name | inside `apply` | Plasma 6.6 split `org.kde.kwin.aurorae` |
 | Capture system state | `snapshot`, `snapshots` | with coverage probes — see below |
 | Compare two states | `diff` | key-level and semantic |
+| Put a snapshot back | `restore` | plan by default, `--apply` to write. See caveat below |
 
 ## Deferred — designed, not built
-
-### `restore` — put a snapshot back
-
-Fully designed in **[`docs/restore-design.md`](docs/restore-design.md)**. Do
-not re-derive it; it is the risky half of the feature and the design encodes
-several non-obvious decisions (why `kdedefaults/` is re-derived rather than
-written, why deletion goes to quarantine, why there is no automatic rollback).
-
-**Blocked on three tests** in [`docs/open-questions.md`](docs/open-questions.md).
-One of them — whether `kwriteconfig6 --delete` reverts to the inherited value
-or writes a `[$d]` shadow marker — can invalidate part of the design. Run them
-first.
-
-Deferred because restore should not be built before there are real snapshots
-to restore from, and because its failure mode is the one thing worse than the
-problem it solves.
 
 ### Smaller deferrals
 
@@ -49,17 +34,27 @@ first run as a test rather than a routine.
 
 | thing | why not | what to run |
 |---|---|---|
+| **`restore --apply` against the live session** | the write path runs for real in the test suite, but only against a temporary `XDG_CONFIG_HOME` with the session bus deliberately switched off. It has never written to this desktop | pin an icon theme by hand, `lol-kde restore <id> --apply --component icons`, confirm the desktop follows |
+| **`repair.unpin()` on a live desktop** | the two-step (§1a) is reasoned from question A's merge behaviour, not observed live. If step 1's `--notify` does *not* leave clients holding the inherited value, step 2 is silently stale | the same test as above — the icon theme is the cheapest visible pointer |
 | auto-snapshot inside `apply` | re-applying a global theme carries the documented plasmashell crash in `KSvg::FrameSvg::mask()`, and the machine was in use | `lol-kde apply com.github.vinceliuice.Layan`, expect the snapshot line, then `7/7 ok` |
 | auto-snapshot inside `install` | needs a theme with missing dependencies | `lol-kde install <theme>` |
 | auto-snapshot inside `legacy --remove` | destructive; nothing needed removing | `lol-kde legacy` first, then `--remove` |
+
+The first two are the same experiment and it is the obvious next step. Take a
+snapshot first; it is a live-config change and needs a `CHANGELOG.md` row.
 
 ## Blocked
 
 | thing | blocker |
 |---|---|
-| `restore` | the three tests in `docs/open-questions.md` |
 | `contrast` KWin effect | root cause unknown; refuses to load with `contrastEnabled=true` |
-| pushing to `origin` (Forgejo) | `the private mirror` unreachable as of turn 7 — `No route to host`, 100% packet loss. `github` is current; **`origin` is behind**. Not an auth problem; do not re-point the remote or force anything, just retry when the box is up |
+| pushing to `origin` (Forgejo) | the box at `the private mirror` is **down for hardware maintenance** (confirmed turn 8; turn 7 saw it as `No route to host`). `github` is current, **`origin` is behind by 2+ commits**. Not an auth problem — do not re-point the remote and do not force. Just push when it is back |
+| restore of tiers B and C | unchanged by turn 8. Kvantum needs the app restarted; `appletsrc` and the GTK/xsettingsd derived files are capture-only by design (`restore-design.md` §8) |
+
+Test C's answer forced a new mechanism rather than a smaller feature — see
+`docs/restore-design.md` §1a. The 2026-08-02 session-loss incident constrains
+how that mechanism may be implemented; the rule is in `CLAUDE.md` and the
+postmortem is `docs/incident-2026-08-02-kconfig-oom.md`.
 
 ## Rules
 

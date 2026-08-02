@@ -12,6 +12,86 @@ Wolfram. Turn 1 is the first message after the context compaction on
 
 ---
 
+## Turn 8 — the three open questions, and a lost session
+
+### machine
+
+| what | change | revert |
+|---|---|---|
+| `~/.config/kwinrc` | probe keys added and removed for question A: `[LolKdeProbe]`, plus `BazInOwnedGroup`/`FreshInOwnedGroup` inside `[Desktops]` | reverted; verified byte-identical to `~/.config/kwinrc.lolkde-turn8.bak` (md5 `d2046250…`) |
+| virtual desktops | one created (`lolkde-probe`) and removed, to make KWin itself write `kwinrc` | reverted; count back to 1. Removal left orphaned `[Tiling][<uuid>][…]` groups behind, cleaned by hand |
+| `~/.config/kdeglobals` `[Icons] Theme` | question C: `--delete` (tombstone), re-pin to `Tela`, `--delete` again, then raw removal of the `Theme[$d]` line | reverted; md5 back to `77a29dfb…`. Now differs only by `ColorSchemeHash`, rewritten by the post-incident login |
+| probe key `[LolKdeProbe] Ping` in `kdeglobals` | added to capture the `--notify` signal shape, removed by raw line edit | reverted, no residue |
+
+Backups taken before any write: `~/.config/kwinrc.lolkde-turn8.bak`,
+`~/.config/kdeglobals.lolkde-turn8.bak`. Snapshot first:
+`2026-08-02T16-11-26Z-d2dd` ("before open-question tests", 13/13 verified).
+
+**A `gdbus emit` of `org.kde.kconfig.notify.ConfigChanged` with the wrong
+nested type destroyed the Plasma session.** Every KDE/Qt client on the bus
+allocated 4–6 GiB within seconds and the kernel killed `kwin_wayland`; SDDM
+returned to the login screen and every open application was lost. Not a
+reboot, not the NVIDIA BAR1 issue. Full postmortem:
+[`docs/incident-2026-08-02-kconfig-oom.md`](docs/incident-2026-08-02-kconfig-oom.md).
+
+No revert exists. A broadcast cannot be undone by cleanup, and every safeguard
+this project has — backup, snapshot, read-back, bounded monitors — worked and
+none of them helped. The config files were already back to their pre-test
+hashes when the session died.
+
+### repo
+
+**Answers.** All three blocking open questions are settled and the rows are
+gone from `docs/open-questions.md`:
+
+- **A — daemons merge.** KWin rewrote `[Desktops]`, a group it owns, and kept
+  both foreign keys planted after its last reparse. Riders: a daemon write
+  re-sorts the whole file canonically (so byte-comparing config files is not a
+  change detector), and removing a virtual desktop orphans its `[Tiling]`
+  groups.
+- **B — the no-op is keyed on the *resolved* value**, not on `kdedefaults`.
+  `--notify` fires only when something actually changed.
+- **C — `--delete` does not delete.** It writes a `Key[$d]` tombstone that
+  blocks inheritance, in both the pinned and the already-absent case. No
+  `kwriteconfig6` flag expresses "make this key absent again".
+
+**Two real bugs, both found by C:**
+
+- `configparser` treats a bare `Key[$d]` line as a fatal parse error and
+  abandons the rest of the file. `khotkeysrc` was being read as 492 keys of
+  644 — **24% of that file was missing from every snapshot and diff taken
+  before this turn**. Fixed with `allow_no_value=True`.
+- `read_cascade()`/`origin()` parsed `Theme[$d]` as a key *named* `Theme[$d]`,
+  so a tombstoned key was reported as inherited-and-fine while KDE resolved it
+  to nothing. Now `kconfig.split_flags()` understands the marker.
+
+**New:**
+
+- `lolkde/restore.py` + `lol-kde restore` — plan by default, `--apply` to
+  write, per `docs/restore-design.md`. Lock, integrity check, environment and
+  package comparison, quarantine, fsynced journal, final verify pass,
+  paste-ready CHANGELOG row.
+- `repair.unpin()` — the mechanism C forced (`restore-design.md` §1a): write
+  the inherited value through `kwriteconfig6 --notify`, *then* remove the
+  user-layer line, so no resolved value changes at the raw edit and no
+  notification has to be invented. New outcomes `UNPINNED`, `TOMBSTONED`,
+  `STALE`; `write(value=None)` no longer reports `UNCHANGED` after planting a
+  tombstone.
+- `CLAUDE.md` "Hard rules" — the P0 ban on hand-emitted KDE signals.
+  `docs/dbus-harness.md` — how to test protocol shapes on an isolated bus.
+  `tests/…::TestNoLiveBusEmission` fails the build if a generic emitter is
+  ever aimed at a KDE interface inside an executable block.
+- 101 → 141 tests. The restore write path runs for real in the suite, against
+  a temporary `XDG_CONFIG_HOME` with the bus switched off.
+
+**Not done:** `restore --apply` has never written to this desktop, and
+`unpin()`'s live behaviour is inferred rather than observed. Both are in
+ROADMAP's "built but not exercised" table with the experiment that settles
+them. `origin` was not pushed — the Forgejo box is down for hardware
+maintenance.
+
+---
+
 ## Turn 7 — documentation pass, end of session
 
 ### machine

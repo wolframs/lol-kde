@@ -23,6 +23,44 @@ Keeping them current is not optional:
 `lol-kde snapshot` before changing anything, and `lol-kde diff --changelog`
 emits the CHANGELOG row for you. The turn number is still yours to fill in.
 
+## Hard rules — not advice, not "be careful"
+
+**Never hand-emit a KConfig notification on the live session bus.** No
+`gdbus emit`, no `dbus-send`, no generic emitter, for
+`org.kde.kconfig.notify.ConfigChanged` or any other internal KDE signal.
+Use `kwriteconfig6 --notify`, or a helper linked against KConfig itself.
+
+On 2026-08-02 this destroyed Wolfram's session and every application in it.
+A `gdbus emit` of `ConfigChanged` with `a{sas}` where KConfig sends `a{saay}`
+made every KDE/Qt client on the bus allocate 4–6 GiB within seconds; the kernel
+killed `kwin_wayland` and SDDM returned to the login screen. Full postmortem:
+**[`docs/incident-2026-08-02-kconfig-oom.md`](docs/incident-2026-08-02-kconfig-oom.md)**.
+
+The trap is specifically that the mistake looks *correctable*. Having watched
+the real signal go by, fixing the type and re-sending is the obvious next move
+and it is the same error again. Observing a signal does not make replaying it
+safe. There is no signature careful enough; the rule is the emitter, not the
+payload. `tests/test_lolkde.py::TestNoLiveBusEmission` fails the build if this
+combination reappears anywhere in the repo.
+
+**Protocol experiments go on an isolated bus.** `dbus-run-session` is enough to
+check a wire signature. Receiver behaviour needs a nested or disposable Plasma
+session, or a VM — never the primary desktop. `docs/dbus-harness.md` has the
+harness.
+
+**A broadcast cannot be undone by cleanup.** Backups, snapshots, read-backs and
+`trap` all worked perfectly during that incident and none of them helped,
+because the signal had already reached every listener. Reversibility is a
+property of *file* writes. Before anything that puts a message on the session
+bus, the question is not "can I undo this" — it is "may this be sent at all".
+
+**Watch memory across a live KDE action.** For any approved live test, sample
+before and for ~15 s after, and abort on multi-process growth:
+
+```sh
+ps -C kwin_wayland -C plasmashell -C kded6 -C kwalletd6 -o pid,comm,rss && free -h
+```
+
 ## Method rules (these matter more than the facts below)
 
 **Name the instrument.** If you measure something, state which tool produced the
@@ -69,6 +107,83 @@ Reading only `~/.config` reports a perfectly applied theme as entirely `unset`.
 **`kwriteconfig6` can exit 0 and write nothing.** If the value already matches
 the inherited default, KConfig does not store it again. This looks exactly like
 a failed write.
+
+The no-op is keyed on the **resolved** value, not on what `kdedefaults` holds.
+Measured on turn 8: with a `Theme[$d]` tombstone in the user layer, writing
+`Theme=Tela` — the same value `kdedefaults` already supplies — *did* land as a
+real pin, because the tombstone made the resolved value empty first. So
+"matches the theme default" is not the condition; "matches what KDE currently
+resolves" is.
+
+**`--notify` fires only when something actually changed.** Two identical
+`kwriteconfig6 --notify` writes in a row produce exactly one `ConfigChanged`
+signal, confirmed on the bus. A silent no-op write is therefore silent twice
+over: nothing stored and nobody told. Never treat a notification as evidence
+that a write happened.
+
+**A running daemon merges; it does not dump its in-memory config over yours.**
+Measured on turn 8, and it settles the biggest assumption in the restore
+design. Foreign keys were appended straight into `~/.config/kwinrc` — one in a
+group KWin has never heard of, one inside `[Desktops]`, which KWin owns and
+writes — *without* `--notify`, so KWin could not have re-read them. Then KWin
+itself was made to write the file (`createDesktop` over D-Bus, which triggers
+`VirtualDesktopManager::save()`). It wrote `Id_2`, `Name_2`, `Number=2` and
+**preserved both foreign keys**, including the one inside the group it was
+rewriting. KConfig re-reads the file at `sync()` and writes back only the keys
+it holds dirty.
+
+Two riders, both from the same measurement:
+
+- **A daemon write rewrites the whole file in canonical order.** Keys came back
+  alphabetically sorted within the group. Byte-comparing two config files is
+  therefore not a reliable change detector; compare parsed keys.
+- **Removing a virtual desktop leaves its `[Tiling][<desktop-uuid>][<output-uuid>]`
+  groups behind.** Orphaned layout state, never cleaned up. Harmless, but it
+  means a create/remove round trip is not byte-neutral — it left residue that
+  had to be cleaned by hand.
+
+## `kwriteconfig6 --delete` does not delete. It tombstones.
+
+The design blocker, settled on turn 8, and the answer is the bad one.
+
+`--delete` **never removes a line**. It writes `Key[$d]` — a delete marker that
+*blocks inheritance*. Measured on `kdeglobals [Icons] Theme`, which was present
+only in `kdedefaults` (`Tela`):
+
+| starting state | after `--delete` | resolves to |
+|---|---|---|
+| absent from user layer, `Tela` inherited | `Theme[$d]` in user layer | **nothing** |
+| pinned `Theme=Tela` in user layer | `Theme[$d]` in user layer | **nothing** |
+
+Both cases produce the same tombstone, and in both the inherited `Tela`
+stopped resolving. `--delete` does not mean "revert to inherited"; it means
+"shadow whatever is underneath". There is **no `kwriteconfig6` flag that
+expresses "make this key absent again"** — the whole option list is
+`--file --group --key --type --delete --notify`.
+
+The only route back is to **remove the line from the file directly**, verified:
+deleting the `Theme[$d]` line restored resolution to `Tela`. `repair.unpin()`
+does this, and it is the one raw file edit in the program.
+
+**Doing that safely does not require inventing a notification.** `unpin()`
+writes the *inherited* value through `kwriteconfig6 --notify` first, so every
+running client is told — by KConfig's own correctly-typed signal — that the
+key resolves to V. Only then is the user-layer line removed, which leaves the
+key resolving to the same V from the layer below. No resolved value changes at
+step two, so nothing needs announcing. See the hard rule at the top of this
+file for why the obvious shortcut is forbidden.
+
+**Two tombstones already exist on this machine** — `konsolerc` and
+`khotkeysrc` — so this is not a hypothetical format corner.
+
+**A bare `Key[$d]` line has no `=`, and that broke the parser.** Python's
+`configparser` treats a valueless line as an error and abandons the *rest of
+the file*, so one tombstone made everything below it invisible. `khotkeysrc`
+was being read as 492 keys when it holds 644 — 24% of the file silently
+missing from every snapshot and diff taken before turn 8. Fixed with
+`allow_no_value=True`, plus `kconfig.split_flags()` so `Key[$d]` is understood
+as a deletion of `Key` rather than as a key named `Key[$d]`. Locale variants
+(`Name[de_DE]`) carry no `$` and must survive intact.
 
 **Colour scheme filenames are not identifiers.** `Sweet-Ambar-Blue` lives in
 `SweetAmbarBlue.colors`. Match on the internal `Name=` field.

@@ -11,55 +11,16 @@ When you settle one: move the answer into `CLAUDE.md`, delete the row here.
 
 ## Blocking `restore`
 
-These three must be answered before `docs/restore-design.md` is implemented.
-The third can invalidate part of that design.
+**All three are settled** (turn 8). The answers are in `CLAUDE.md`; the
+consequences are in `docs/restore-design.md` §1a and §2.
 
-### A. Does a running KDE daemon clobber a foreign edit, or merge with it?
+The short version, because C changed the design:
 
-The design assumes KConfig **merges** on `sync()` — it re-reads the file and
-writes back only keys it holds dirty. If instead daemons dump their whole
-in-memory config at exit, byte-level restore is far more dangerous than the
-design allows and every tier needs to be more conservative.
-
-```sh
-printf '\n[LolKdeProbe]\nBaz=2\n' >> ~/.config/kwinrc
-kwriteconfig6 --file kwinrc --group Windows --key Placement Centered --notify
-sleep 2 && grep -c 'Baz=2' ~/.config/kwinrc      # 1 => merge; 0 => clobber
-kwriteconfig6 --file kwinrc --group LolKdeProbe --key Baz --delete
-```
-
-### ~~B. Is the silent `kwriteconfig6` no-op real and observable?~~ SETTLED
-
-**Yes.** On 2026-08-02 `repair.aurorae_plugin()` wrote
-`theme=__aurorae__svg__Layan` into `~/.config/kwinrc`, exited 0, and wrote
-nothing — the value matched the inherited `kdedefaults` value. Confirmed by
-inspecting both layers: `~/.config/kwinrc` has `library` but no `theme`;
-`~/.config/kdedefaults/kwinrc` has both.
-
-`repair.write()` now returns `WROTE` / `INHERITED` / `UNCHANGED` / `FAILED`
-from a two-level read-back. Recorded in `CLAUDE.md`. Kept here only because
-the restore design depends on it.
-
-### C. Does `--delete` revert to the inherited value, or write a `[$d]` shadow?
-
-**The design blocker.** Restore needs to express "this key was *not* pinned in
-the user layer; it was inherited". If `--delete` writes a `key[$d]` tombstone
-instead of removing the line, that shadow *blocks* inheritance and produces a
-state that never existed — and the whole "absent, inherited" row of the restore
-state table needs a different mechanism.
-
-Pick a key present only in `kdedefaults` (`kdeglobals [Icons] Theme` is one
-today):
-
-```sh
-kreadconfig6 --file kdeglobals --group Icons --key Theme        # before
-kwriteconfig6 --file kdeglobals --group Icons --key Theme --delete
-grep -n 'Theme' ~/.config/kdeglobals | grep -i 'icons' -A2      # shadow marker?
-grep -n '\[\$d\]' ~/.config/kdeglobals
-kreadconfig6 --file kdeglobals --group Icons --key Theme        # inherited again?
-```
-
-Restore the prior state afterwards, and snapshot first.
+| | question | answer |
+|---|---|---|
+| A | daemon clobber or merge? | **merge** — KWin rewrote a group it owns and kept both foreign keys planted after its last reparse |
+| B | is the silent no-op real? | **yes**, and it is keyed on the *resolved* value, not on `kdedefaults` |
+| C | does `--delete` revert to inherited? | **no — it writes a `Key[$d]` tombstone that blocks inheritance**, whether or not the key was pinned. `repair.unpin()` is the replacement mechanism |
 
 ---
 
@@ -80,6 +41,21 @@ A fossil in the manifest is harmless but misleading; a missing live path is not.
 | `kdeglobals [KScreen] ScreenScaleFactors` | present and empty; a legacy X11 global-scale key. Reading it as "scale is unset" would be wrong on Wayland | `kreadconfig6 --file kdeglobals --group KScreen --key ScreenScaleFactors` after a scale change |
 
 ---
+
+## Opened by turn 8
+
+| claim | why it is not settled | settles it |
+|---|---|---|
+| `repair.unpin()`'s two-step works **on a live desktop** | unit-tested against a temporary config tree only, and deliberately bus-silent there. The live claim — that step 1's `--notify` leaves running clients holding the inherited value, so step 2's raw removal needs no announcement — has not been observed on a real session | pin `kdeglobals [Icons] Theme` to a *different* icon theme, confirm the desktop changes, `unpin()`, and watch whether icons return to `Tela` without a restart. Snapshot first; this is the mechanism `restore` is built on |
+| the notification is unnecessary at step 2 because no resolved value changes | reasoning from KConfig's merge behaviour (question A), not from observation | same test as above |
+| a `[$d]` tombstone in `kdedefaults` behaves the same as one in `~/.config` | only the user layer was tested | plant one in the `kdedefaults` copy of a throwaway file and read the cascade |
+
+Not open questions, but carried here so they are not lost — both are outside
+this repo and were surfaced by the incident postmortem:
+
+- the host has 64 GiB RAM and **512 MiB swap**, with no early-OOM policy
+- `an unrelated systemd unit` restarts every ten seconds (`node` missing
+  from the unit's `PATH`) and floods the journal
 
 ## Measurement caveats
 

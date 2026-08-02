@@ -13,9 +13,12 @@ aimed at.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 
 from . import kconfig, paths, resolve
 
@@ -29,6 +32,9 @@ WROTE = "wrote"          # the value landed in the layer we aimed at
 INHERITED = "inherited"  # resolves correctly, but KConfig stored nothing
 UNCHANGED = "unchanged"  # already correct, in the right layer
 FAILED = "failed"        # the value does not resolve
+UNPINNED = "unpinned"    # the user-layer entry is gone; the cascade resolves it
+TOMBSTONED = "tombstoned"  # a [$d] marker now blocks inheritance
+STALE = "stale"          # correct on disk; running clients were not told
 
 
 @dataclass
@@ -87,6 +93,13 @@ def write(file: str, group: str, key: str, value: str | None,
     layer_name = str(after_layer) if after_layer else ""
 
     if value is None:
+        # --delete does not delete. It writes `key[$d]`, which shadows every
+        # lower layer, so the honest report is "tombstoned", not "unchanged".
+        if kconfig.tombstoned(user_layer, group, key):
+            return WriteResult(file, group, key, "", TOMBSTONED, after or "",
+                               layer_name,
+                               f"wrote a [$d] tombstone in {user_layer}; the "
+                               "key now resolves to nothing")
         outcome = UNCHANGED if after != before or after is None else FAILED
         return WriteResult(file, group, key, "", outcome, after or "", layer_name)
     if after != value:
@@ -99,6 +112,190 @@ def write(file: str, group: str, key: str, value: str | None,
         file, group, key, value, INHERITED, after, layer_name,
         "resolves correctly, but KConfig stored nothing -- the value already "
         "matched an inherited default, so it is not pinned in your layer")
+
+
+def inherited_value(file: str, group: str, key: str) -> str | None:
+    """What the key would resolve to if the user layer said nothing at all.
+
+    Everything below ~/.config: kdedefaults, then XDG_CONFIG_DIRS. This is the
+    value "absent, inherited" is supposed to expose.
+    """
+    layers = paths.config_layers()[:-1]          # drop ~/.config itself
+    found = None
+    for directory in layers:
+        parser = kconfig.read_ini(directory / file)
+        state = kconfig.entry_state(parser, group, key)
+        if state == "deleted":
+            found = None
+        elif state == "set":
+            found = (parser.get(group, key) or "").strip()
+    return found
+
+
+def _safe_to_edit(path: Path) -> str | None:
+    """Refuse anything that is not plainly this user's own config file.
+
+    Checked immediately before the write rather than once up front, because
+    the gap between the two is a TOCTOU window. Symlinks are refused outright:
+    people symlink kdeglobals into a dotfiles repo, and following it writes
+    into git.
+    """
+    if os.geteuid() == 0:
+        return "refusing to edit config as root"
+    if path.is_symlink():
+        return f"{path} is a symlink; refusing to write through it"
+    if not path.is_file():
+        return f"{path} is not a regular file"
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        return str(exc)
+    if info.st_uid != os.getuid():
+        return f"{path} is not owned by uid {os.getuid()}"
+    root = paths.config_home().resolve()
+    if not str(path.resolve()).startswith(str(root) + os.sep):
+        return f"{path} is outside {root}"
+    return None
+
+
+def _strip_key(path: Path, group: str, key: str) -> list[str]:
+    """Remove a key and any `[$…]`-decorated form of it from ONE group.
+
+    This is the only raw file edit in the program, and it exists because no
+    KDE command-line tool can express "make this key absent again".
+    `kwriteconfig6 --delete` writes a `[$d]` tombstone, which *blocks* the
+    inherited value rather than revealing it -- measured 2026-08-02, open
+    question C. Removing the line is the only way back.
+
+    Returns the lines removed, so the caller can journal them.
+    """
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines(True)
+    header = f"[{group}]"
+    out: list[str] = []
+    removed: list[str] = []
+    inside = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            inside = stripped == header
+            out.append(line)
+            continue
+        if inside and stripped:
+            name, _ = kconfig.split_flags(stripped.split("=", 1)[0].strip())
+            if name == key:
+                removed.append(line)
+                continue
+        out.append(line)
+
+    if removed:
+        # Atomic, mode-preserving, and in the same directory so os.replace
+        # cannot cross a filesystem boundary.
+        mode = path.stat().st_mode
+        handle, temporary = tempfile.mkstemp(dir=str(path.parent),
+                                             prefix=path.name + ".lolkde")
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8") as stream:
+                stream.write("".join(out))
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.chmod(temporary, mode)
+            os.replace(temporary, path)
+        except OSError:
+            Path(temporary).unlink(missing_ok=True)
+            raise
+    return removed
+
+
+def unpin(file: str, group: str, key: str, notify: bool = True) -> WriteResult:
+    """Restore "absent from ~/.config, inherited from below" for one key.
+
+    The obvious route -- `kwriteconfig6 --delete` -- is wrong: it writes a
+    `[$d]` tombstone that blocks the cascade, leaving the key resolving to
+    nothing rather than to the inherited value. See open question C.
+
+    The route that works, using only supported writers:
+
+    1. Write the *inherited* value into the user layer with `--notify`. This
+       is a real KConfig write, so running clients are told about it through
+       KConfig's own correctly-typed signal. After it, everyone agrees the
+       key resolves to V.
+    2. Delete the user-layer line outright. The key now resolves to V again
+       from the layer below -- the same V. No value changed, so nothing needs
+       to be notified, and no notification has to be synthesised.
+
+    Step 1 is what makes step 2 safe. Never replace it by hand-emitting
+    ConfigChanged: doing that with a wrong signature destroyed a session on
+    2026-08-02 (docs/incident-2026-08-02-kconfig-oom.md), and there is no
+    signature careful enough to make it allowed.
+
+    `notify=False` keeps step 1 off the session bus. It is for tests running
+    against a temporary config tree, where there is no live desktop to tell
+    and no reason to broadcast anything at all.
+    """
+    path = paths.config_home() / file
+    inherited = inherited_value(file, group, key)
+    pinned = kconfig.get(path, group, key)
+    tomb = path.is_file() and kconfig.tombstoned(path, group, key)
+
+    if not path.is_file() or (pinned is None and not tomb):
+        return WriteResult(file, group, key, inherited or "", UNCHANGED,
+                           inherited or "", "",
+                           "already absent from the user layer")
+
+    refusal = _safe_to_edit(path)
+    if refusal:
+        return WriteResult(file, group, key, inherited or "", FAILED,
+                           detail=refusal)
+
+    # Step 1: agree on the value through the supported writer, so that the
+    # raw edit that follows changes no resolved value at all.
+    if inherited is not None and pinned != inherited:
+        write(file, group, key, inherited, notify=notify)
+
+    try:
+        removed = _strip_key(path, group, key)
+    except OSError as exc:
+        return WriteResult(file, group, key, inherited or "", FAILED,
+                           detail=str(exc))
+
+    after = kconfig.read_cascade(file).get((file, group), {}).get(key)
+    layer = kconfig.origin(file, group, key)
+    detail = f"removed {len(removed)} line(s) from {path}"
+
+    if inherited is None:
+        # Nothing underneath. The file is right, but no supported writer can
+        # announce "this key is gone" -- so say so rather than implying live
+        # effect. The alternative is the forbidden one.
+        return WriteResult(file, group, key, "", STALE, after or "",
+                           str(layer or ""),
+                           detail + "; nothing inherits it, so running "
+                                    "applications keep the old value until "
+                                    "they restart")
+    if after != inherited:
+        return WriteResult(file, group, key, inherited, FAILED, after or "",
+                           str(layer or ""),
+                           detail + "; the inherited value did not reappear")
+    if layer == path:
+        return WriteResult(file, group, key, inherited, FAILED, after,
+                           str(layer), detail + "; still pinned in the user layer")
+    return WriteResult(file, group, key, inherited, UNPINNED, after,
+                       str(layer or ""), detail)
+
+
+def delete(file: str, group: str, key: str) -> WriteResult:
+    """`kwriteconfig6 --delete`, reported honestly.
+
+    Almost never what you want. It does not remove the key, it shadows it:
+    the resulting `[$d]` tombstone makes the key resolve to nothing even when
+    a lower layer defines it. Use unpin() to expose the inherited value.
+    """
+    result = write(file, group, key, None, notify=True)
+    if result.outcome == TOMBSTONED:
+        inherited = inherited_value(file, group, key)
+        if inherited is not None:
+            result.detail += (f", shadowing the inherited value "
+                              f"{inherited!r} -- use unpin() to expose it")
+    return result
 
 
 def reconfigure_kwin() -> bool:

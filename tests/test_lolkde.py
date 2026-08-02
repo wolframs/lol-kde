@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lolkde import (banner, catalog, cli, compare, install, journal,  # noqa: E402
                     kconfig, knsrc, legacy, manifest, paths, repair,
-                    resolve, snapshot, store)
+                    resolve, restore, snapshot, store)
 
 
 class TestManifestParsing(unittest.TestCase):
@@ -598,6 +598,101 @@ class TestPointerEquivalence(unittest.TestCase):
         self.assertIn("candy-icons", rows[0].note)
 
 
+class TestNoLiveBusEmission(unittest.TestCase):
+    """Nothing in this repo may hand-emit an internal KDE D-Bus signal.
+
+    On 2026-08-02 a generic emitter sent KConfig's change-notification
+    signal with the wrong nested type; every KDE client on the session bus
+    allocated several GiB and the kernel killed the compositor. The full
+    account is in docs/incident-2026-08-02-kconfig-oom.md.
+
+    (This docstring deliberately avoids naming the tool and the interface
+    together in one breath -- the check below scans this file too, and a
+    guard with an exemption for itself is not a guard.)
+
+    This test is the guard, because the mistake is one somebody re-derives
+    rather than copies: you watch the real signal go past, notice the tool
+    that could replay it, and the wrongness is invisible until it is fatal.
+    """
+
+    # Assembled from pieces so that this file, which must talk about the
+    # forbidden thing in order to forbid it, does not itself match.
+    EMITTERS = ("gdbus" + " emit", "dbus" + "-send")
+    KDE_INTERFACE = "org." + "kde."
+
+    # The rule is against *recipes*, not against the words. Prose that names
+    # the emitter in order to ban it is exactly what this repo should contain,
+    # so only executable context counts: shell fences in Markdown, and every
+    # line of an actual program.
+    SHELL_FENCES = ("```sh", "```bash", "```shell", "```console")
+
+    def _shell_blocks(self, text):
+        inside = False
+        for line in text.splitlines():
+            if line.startswith("```"):
+                inside = line.strip() in self.SHELL_FENCES
+                continue
+            if inside:
+                yield line
+
+    def _executable_lines(self):
+        root = Path(__file__).resolve().parent.parent
+        for pattern in ("lolkde/*.py", "tests/*.py", "bin/*", "docs/*.md",
+                        "*.md"):
+            for path in sorted(root.glob(pattern)):
+                if not path.is_file():
+                    continue
+                rel = path.relative_to(root).as_posix()
+                text = path.read_text(encoding="utf-8", errors="replace")
+                lines = (self._shell_blocks(text) if rel.endswith(".md")
+                         else text.splitlines())
+                # A shell command can be continued across lines, so a window
+                # of a few lines is the unit, not a single line.
+                window = []
+                for line in lines:
+                    window.append(line)
+                    if len(window) > 4:
+                        window.pop(0)
+                    yield rel, "\n".join(window)
+
+    def _is_offender(self, chunk):
+        return (any(e in chunk for e in self.EMITTERS)
+                and self.KDE_INTERFACE in chunk)
+
+    def test_no_generic_emitter_targets_a_kde_interface(self):
+        offenders = sorted({rel for rel, chunk in self._executable_lines()
+                            if self._is_offender(chunk)})
+        self.assertEqual(offenders, [], "\n".join([
+            "A generic D-Bus emitter is aimed at a KDE interface inside an",
+            "executable block. This is the combination that destroyed a live",
+            "session on 2026-08-02. Use kwriteconfig6 --notify, or a helper",
+            "linked against KConfig, or an isolated bus -- see",
+            "docs/dbus-harness.md and docs/incident-2026-08-02-kconfig-oom.md.",
+            *offenders,
+        ]))
+
+    def test_the_guard_would_actually_catch_it(self):
+        # A guard nobody has seen fail is a guard nobody knows works. This is
+        # the incident command, reassembled at runtime so it exists nowhere
+        # in the repo as text.
+        fatal = (self.EMITTERS[0] + " --session --object-path /kdeglobals "
+                 "--signal " + self.KDE_INTERFACE + "kconfig.notify.ConfigChanged")
+        self.assertTrue(self._is_offender(fatal))
+        # And that it does not fire on the supported route.
+        self.assertFalse(self._is_offender(
+            "kwriteconfig6 --file kwinrc --group G --key K V --notify"))
+        # Nor on prose that names the emitter without invoking it.
+        self.assertFalse(self._is_offender("Never use " + self.EMITTERS[0]))
+
+    def test_the_postmortem_is_still_present_and_still_fenced_as_text(self):
+        root = Path(__file__).resolve().parent.parent
+        text = (root / "docs/incident-2026-08-02-kconfig-oom.md").read_text()
+        self.assertIn("DO NOT RUN", text)
+        # If someone "helpfully" re-fences the evidence as shell, the rule
+        # has quietly become a snippet again.
+        self.assertNotIn("```sh\ngdbus emit", text)
+
+
 class TestBanner(unittest.TestCase):
     def test_narrow_terminal_falls_back_to_one_line(self):
         out = banner.render(width_available=20, color=False)
@@ -672,6 +767,473 @@ class TestConfigCascade(unittest.TestCase):
                 del os.environ["XDG_CONFIG_DIRS"]
             else:
                 os.environ["XDG_CONFIG_DIRS"] = old
+
+
+class TestDeleteMarkers(unittest.TestCase):
+    """`Key[$d]` is a tombstone that blocks inheritance, not an absent key.
+
+    Measured 2026-08-02 (open question C): `kwriteconfig6 --delete` never
+    removes a line, it writes one. Read naively the tombstone parses as a key
+    called "Theme[$d]", the inherited value underneath looks untouched, and
+    the tool cheerfully reports a value KDE itself no longer resolves.
+    """
+
+    def test_flags_are_split_off_but_locale_suffixes_are_not(self):
+        self.assertEqual(kconfig.split_flags("Theme[$d]"), ("Theme", "d"))
+        self.assertEqual(kconfig.split_flags("Theme[$di]"), ("Theme", "di"))
+        self.assertEqual(kconfig.split_flags("Theme"), ("Theme", ""))
+        # A locale variant carries no `$` and must survive intact.
+        self.assertEqual(kconfig.split_flags("Name[de_DE]"), ("Name[de_DE]", ""))
+
+    def _layered(self, tmp, lower_text, upper_text):
+        lower, upper = Path(tmp) / "kdedefaults", Path(tmp)
+        lower.mkdir()
+        (lower / "probe").write_text(lower_text)
+        (upper / "probe").write_text(upper_text)
+        old = os.environ.get("XDG_CONFIG_HOME"), os.environ.get("XDG_CONFIG_DIRS")
+        os.environ["XDG_CONFIG_HOME"] = str(upper)
+        os.environ["XDG_CONFIG_DIRS"] = str(lower)
+        return old
+
+    def _unset(self, old):
+        for name, value in zip(("XDG_CONFIG_HOME", "XDG_CONFIG_DIRS"), old):
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    def test_a_tombstone_above_removes_the_value_below(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old = self._layered(tmp, "[Icons]\nTheme=Tela\n",
+                                "[Icons]\nTheme[$d]\n")
+            try:
+                merged = kconfig.read_cascade("probe")
+                self.assertNotIn("Theme", merged[("probe", "Icons")])
+                # And it must not leak through under its decorated name.
+                self.assertNotIn("Theme[$d]", merged[("probe", "Icons")])
+                self.assertIsNone(kconfig.origin("probe", "Icons", "Theme"))
+                self.assertTrue(kconfig.tombstoned(
+                    Path(tmp) / "probe", "Icons", "Theme"))
+            finally:
+                self._unset(old)
+
+    def test_without_the_tombstone_the_lower_layer_still_wins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old = self._layered(tmp, "[Icons]\nTheme=Tela\n", "[Icons]\n")
+            try:
+                merged = kconfig.read_cascade("probe")
+                self.assertEqual(merged[("probe", "Icons")]["Theme"], "Tela")
+                self.assertIsNotNone(kconfig.origin("probe", "Icons", "Theme"))
+            finally:
+                self._unset(old)
+
+    def test_get_treats_a_tombstoned_key_as_unset(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "probe"
+            path.write_text("[Icons]\nTheme[$d]\n")
+            self.assertIsNone(kconfig.get(path, "Icons", "Theme"))
+            self.assertTrue(kconfig.tombstoned(path, "Icons", "Theme"))
+
+
+class TestUnpin(unittest.TestCase):
+    """Exposing an inherited value again -- the mechanism test C forced.
+
+    All of this runs against a temporary config tree. Nothing here may touch
+    the real session: the raw edit is safe, but the supported writer it calls
+    first is a live one.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.user = root / "config"
+        self.lower = root / "config" / "kdedefaults"
+        self.lower.mkdir(parents=True)
+        self.old = (os.environ.get("XDG_CONFIG_HOME"),
+                    os.environ.get("XDG_CONFIG_DIRS"))
+        os.environ["XDG_CONFIG_HOME"] = str(self.user)
+        os.environ["XDG_CONFIG_DIRS"] = str(self.lower)
+        self.addCleanup(self._restore_env)
+
+    def _restore_env(self):
+        for name, value in zip(("XDG_CONFIG_HOME", "XDG_CONFIG_DIRS"), self.old):
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    def _write(self, upper, lower="[Icons]\nTheme=Tela\n"):
+        (self.lower / "probe").write_text(lower)
+        (self.user / "probe").write_text(upper)
+
+    def test_removing_a_pin_exposes_the_inherited_value(self):
+        self._write("[Icons]\nTheme=Breeze\nOther=keep\n")
+        result = repair.unpin("probe", "Icons", "Theme", notify=False)
+        self.assertEqual(result.outcome, repair.UNPINNED)
+        self.assertEqual(result.resolved, "Tela")
+        self.assertFalse(result.pinned)
+        # The neighbouring key in the same group is untouched.
+        self.assertEqual(
+            kconfig.get(self.user / "probe", "Icons", "Other"), "keep")
+
+    def test_a_tombstone_is_removed_not_added_to(self):
+        self._write("[Icons]\nTheme[$d]\n")
+        self.assertIsNone(kconfig.read_cascade("probe")[("probe", "Icons")]
+                          .get("Theme"))
+        result = repair.unpin("probe", "Icons", "Theme", notify=False)
+        self.assertEqual(result.outcome, repair.UNPINNED)
+        self.assertEqual(result.resolved, "Tela")
+        self.assertNotIn("[$d]", (self.user / "probe").read_text())
+
+    def test_nothing_underneath_is_reported_as_stale_not_success(self):
+        self._write("[Icons]\nTheme=Breeze\n", lower="[Icons]\n")
+        result = repair.unpin("probe", "Icons", "Theme", notify=False)
+        # On disk it is right, but no supported writer can announce it, and
+        # inventing one is the forbidden thing. Say so instead of claiming
+        # the desktop changed.
+        self.assertEqual(result.outcome, repair.STALE)
+        self.assertIn("restart", result.detail)
+
+    def test_an_absent_key_is_a_no_op(self):
+        self._write("[Icons]\n")
+        self.assertEqual(repair.unpin("probe", "Icons", "Theme", notify=False).outcome,
+                         repair.UNCHANGED)
+
+    def test_only_the_named_group_is_touched(self):
+        self._write("[Icons]\nTheme=Breeze\n\n[Other]\nTheme=Breeze\n")
+        repair.unpin("probe", "Icons", "Theme", notify=False)
+        text = (self.user / "probe").read_text()
+        self.assertIn("[Other]\nTheme=Breeze", text)
+
+    def test_bracketed_group_names_still_match_exactly(self):
+        # KWin writes groups like [Tiling][uuid][uuid]; configparser reports
+        # that section as `Tiling][uuid][uuid`, and the raw editor has to
+        # rebuild the header identically or it edits the wrong group.
+        self._write("[Tiling][a][b]\nTheme=Breeze\n\n[Icons]\nTheme=Breeze\n")
+        repair.unpin("probe", "Tiling][a][b", "Theme", notify=False)
+        text = (self.user / "probe").read_text()
+        self.assertNotIn("[Tiling][a][b]\nTheme", text)
+        self.assertIn("[Icons]\nTheme=Breeze", text)
+
+    def test_a_symlinked_config_is_refused(self):
+        self._write("[Icons]\nTheme=Breeze\n")
+        real = Path(self.tmp.name) / "elsewhere"
+        real.write_text("[Icons]\nTheme=Breeze\n")
+        (self.user / "probe").unlink()
+        (self.user / "probe").symlink_to(real)
+        result = repair.unpin("probe", "Icons", "Theme", notify=False)
+        self.assertEqual(result.outcome, repair.FAILED)
+        self.assertIn("symlink", result.detail)
+        # And the symlink target is untouched.
+        self.assertIn("Theme=Breeze", real.read_text())
+
+    def test_the_file_is_replaced_atomically_leaving_no_debris(self):
+        self._write("[Icons]\nTheme=Breeze\n")
+        repair.unpin("probe", "Icons", "Theme", notify=False)
+        leftovers = [p.name for p in self.user.iterdir() if "lolkde" in p.name]
+        self.assertEqual(leftovers, [])
+
+    def test_inherited_value_ignores_the_user_layer(self):
+        self._write("[Icons]\nTheme=Breeze\n")
+        self.assertEqual(repair.inherited_value("probe", "Icons", "Theme"),
+                         "Tela")
+
+
+class _RestoreFixture:
+    """A fake snapshot and a fake live tree, both under a temporary HOME.
+
+    A mixin rather than a base TestCase, so that the end-to-end class below
+    does not silently re-run every plan test a second time.
+    """
+
+    KEY = ("kdeglobals", "Icons", "Theme")
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.live = root / "live"
+        (self.live / "kdedefaults").mkdir(parents=True)
+        self.snap = root / "snap"
+        (self.snap / "files").mkdir(parents=True)
+        self.old = (os.environ.get("XDG_CONFIG_HOME"),
+                    os.environ.get("XDG_CONFIG_DIRS"))
+        os.environ["XDG_CONFIG_HOME"] = str(self.live)
+        os.environ["XDG_CONFIG_DIRS"] = "/nonexistent-for-tests"
+        self.addCleanup(self._restore_env)
+
+    def _restore_env(self):
+        for name, value in zip(("XDG_CONFIG_HOME", "XDG_CONFIG_DIRS"), self.old):
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    def _make(self, snap_user, snap_defaults, live_user, live_defaults):
+        """Write both worlds: user and kdedefaults layers, snapshot and live."""
+        manifest_rows = []
+        for relative, text in (("config/kdeglobals", snap_user),
+                               ("config/kdedefaults/kdeglobals", snap_defaults)):
+            if text is None:
+                continue
+            path = self.snap / "files" / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+            manifest_rows.append({
+                "path": relative, "status": "captured",
+                "source": str(self.live / relative[len("config/"):]),
+                "sha256": hashlib.sha256(text.encode()).hexdigest()})
+        (self.snap / "manifest.json").write_text(json.dumps(manifest_rows))
+        (self.snap / "meta.json").write_text(json.dumps(
+            {"id": "test-snapshot", "schema": 1}))
+        (self.snap / "state").mkdir(exist_ok=True)
+        (self.snap / "state" / "env.json").write_text(json.dumps(
+            {"XDG_CONFIG_DIRS": os.environ["XDG_CONFIG_DIRS"]}))
+
+        if live_user is not None:
+            (self.live / "kdeglobals").write_text(live_user)
+        if live_defaults is not None:
+            (self.live / "kdedefaults" / "kdeglobals").write_text(live_defaults)
+
+    def _action(self):
+        plan = restore.build(self.snap, ["icons"])
+        steps = [s for s in plan.steps if (s.file, s.group, s.key) == self.KEY]
+        self.assertEqual(len(steps), 1)
+        return steps[0]
+
+
+class TestRestorePlan(_RestoreFixture, unittest.TestCase):
+    """The plan is where restore is right or wrong. It writes nothing.
+
+    Each case builds a fake snapshot and a fake live tree, and asserts the
+    *action* chosen. The one that matters is the tombstone case: a key the
+    snapshot inherited but which the live user layer speaks about at all must
+    be un-pinned, not deleted -- `--delete` would tombstone it and it would
+    resolve to nothing (open question C).
+    """
+
+    def test_a_pin_that_matches_is_left_alone(self):
+        self._make("[Icons]\nTheme=Papirus\n", "[Icons]\nTheme=Tela\n",
+                   "[Icons]\nTheme=Papirus\n", "[Icons]\nTheme=Tela\n")
+        self.assertEqual(self._action().action, restore.SAME)
+
+    def test_a_pin_that_differs_is_written_back(self):
+        self._make("[Icons]\nTheme=Papirus\n", "[Icons]\nTheme=Tela\n",
+                   "[Icons]\nTheme=Breeze\n", "[Icons]\nTheme=Tela\n")
+        step = self._action()
+        self.assertEqual(step.action, restore.SET)
+        self.assertEqual(step.want, "Papirus")
+
+    def test_inherited_in_the_snapshot_but_pinned_live_is_unpinned(self):
+        # The case open question C rewrote. --delete here would write a
+        # tombstone and the key would resolve to nothing at all.
+        self._make("[Icons]\n", "[Icons]\nTheme=Tela\n",
+                   "[Icons]\nTheme=Breeze\n", "[Icons]\nTheme=Tela\n")
+        step = self._action()
+        self.assertEqual(step.action, restore.UNPIN)
+        self.assertEqual(step.want, "Tela")
+        self.assertEqual(step.want_layer, restore.DEFAULTS)
+
+    def test_inherited_on_both_sides_is_left_alone(self):
+        self._make("[Icons]\n", "[Icons]\nTheme=Tela\n",
+                   "[Icons]\n", "[Icons]\nTheme=Tela\n")
+        self.assertEqual(self._action().action, restore.SAME)
+
+    def test_a_live_tombstone_is_not_mistaken_for_an_inherited_value(self):
+        # Live has Theme[$d]: the cascade resolves to nothing, even though
+        # kdedefaults still says Tela. Restore must see a difference here.
+        self._make("[Icons]\n", "[Icons]\nTheme=Tela\n",
+                   "[Icons]\nTheme[$d]\n", "[Icons]\nTheme=Tela\n")
+        step = self._action()
+        self.assertEqual(step.have, None)
+        self.assertEqual(step.action, restore.UNPIN)
+        self.assertEqual(step.want, "Tela")
+
+    def test_absent_everywhere_on_both_sides_is_not_a_write(self):
+        self._make("[Icons]\n", "[Icons]\n", "[Icons]\n", "[Icons]\n")
+        self.assertEqual(self._action().action, restore.SAME)
+
+    def test_unselected_components_are_reported_as_drift_not_restored(self):
+        self._make("[Icons]\nTheme=Papirus\n", "[Icons]\nTheme=Tela\n",
+                   "[Icons]\nTheme=Breeze\n", "[Icons]\nTheme=Tela\n")
+        plan = restore.build(self.snap, ["cursor"])
+        self.assertFalse([s for s in plan.steps
+                          if (s.file, s.group, s.key) == self.KEY])
+        self.assertTrue(any("Icons" in line for line in plan.drift))
+        self.assertTrue(any("will survive this restore" in w
+                            for w in plan.warnings))
+
+    def test_a_corrupt_snapshot_blocks_everything(self):
+        self._make("[Icons]\nTheme=Papirus\n", "[Icons]\nTheme=Tela\n",
+                   "[Icons]\nTheme=Breeze\n", "[Icons]\nTheme=Tela\n")
+        (self.snap / "files" / "config" / "kdeglobals").write_text("tampered")
+        plan = restore.build(self.snap, ["icons"])
+        self.assertTrue(any("corrupt" in b for b in plan.blockers))
+
+    def test_a_changed_cascade_shape_is_warned_about_loudly(self):
+        self._make("[Icons]\n", "[Icons]\nTheme=Tela\n",
+                   "[Icons]\n", "[Icons]\nTheme=Tela\n")
+        (self.snap / "state" / "env.json").write_text(json.dumps(
+            {"XDG_CONFIG_DIRS": "/somewhere/else"}))
+        plan = restore.build(self.snap, ["icons"])
+        self.assertTrue(any("XDG_CONFIG_DIRS changed" in w
+                            for w in plan.warnings))
+
+    def test_building_a_plan_writes_nothing(self):
+        self._make("[Icons]\nTheme=Papirus\n", "[Icons]\nTheme=Tela\n",
+                   "[Icons]\nTheme=Breeze\n", "[Icons]\nTheme=Tela\n")
+        before = (self.live / "kdeglobals").read_text()
+        restore.build(self.snap, list(restore.components()))
+        self.assertEqual((self.live / "kdeglobals").read_text(), before)
+
+
+class TestRestoreEndToEnd(_RestoreFixture, unittest.TestCase):
+    """Actually run the writes, against a temporary config tree.
+
+    This exists because ROADMAP.md already carries a "built but not exercised
+    end-to-end" section and restore is the last thing that should join it.
+    Everything runs with notify=False, so nothing reaches the session bus.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.restores = Path(self.tmp.name) / "restores"
+        self._real_store = restore.store
+        restore.store = lambda: self.restores
+        self.addCleanup(lambda: setattr(restore, "store", self._real_store))
+
+    def _run(self, components=("icons",)):
+        plan = restore.build(self.snap, list(components))
+        self.assertFalse(plan.blockers, plan.blockers)
+        return plan, restore.run(plan, pre_snapshot="fake-id", notify=False)
+
+    def test_a_differing_pin_is_written_and_verifies(self):
+        self._make("[Icons]\nTheme=Papirus\n", "[Icons]\nTheme=Tela\n",
+                   "[Icons]\nTheme=Breeze\n", "[Icons]\nTheme=Tela\n")
+        plan, outcome = self._run()
+        self.assertEqual(outcome.exit_code, 0)
+        self.assertEqual(restore.live_facts(*self.KEY).resolved, "Papirus")
+        self.assertEqual(restore.live_facts(*self.KEY).layer, restore.USER)
+
+    def test_unpinning_exposes_the_inherited_value_for_real(self):
+        self._make("[Icons]\n", "[Icons]\nTheme=Tela\n",
+                   "[Icons]\nTheme=Breeze\n", "[Icons]\nTheme=Tela\n")
+        plan, outcome = self._run()
+        self.assertEqual(outcome.exit_code, 0)
+        facts = restore.live_facts(*self.KEY)
+        self.assertEqual(facts.resolved, "Tela")
+        self.assertEqual(facts.layer, restore.DEFAULTS)
+        self.assertFalse(facts.user_entry)
+        # And specifically NOT via a tombstone, which is what --delete would
+        # have left behind and what would have resolved to nothing.
+        self.assertNotIn("[$d]", (self.live / "kdeglobals").read_text())
+
+    def test_a_live_tombstone_is_cleared_rather_than_added_to(self):
+        self._make("[Icons]\n", "[Icons]\nTheme=Tela\n",
+                   "[Icons]\nTheme[$d]\n", "[Icons]\nTheme=Tela\n")
+        plan, outcome = self._run()
+        self.assertEqual(outcome.exit_code, 0)
+        self.assertEqual(restore.live_facts(*self.KEY).resolved, "Tela")
+        self.assertNotIn("[$d]", (self.live / "kdeglobals").read_text())
+
+    def test_running_it_twice_changes_nothing_the_second_time(self):
+        # Steps are desired end states, not deltas, precisely so that
+        # re-running is the recovery mechanism (design section 6.2).
+        self._make("[Icons]\nTheme=Papirus\n", "[Icons]\nTheme=Tela\n",
+                   "[Icons]\nTheme=Breeze\n", "[Icons]\nTheme=Tela\n")
+        self._run()
+        after_first = (self.live / "kdeglobals").read_text()
+        plan, outcome = self._run()
+        self.assertEqual(outcome.exit_code, 0)
+        self.assertEqual(plan.writes, [])
+        self.assertEqual((self.live / "kdeglobals").read_text(), after_first)
+
+    def test_the_original_file_is_quarantined_before_being_touched(self):
+        self._make("[Icons]\nTheme=Papirus\n", "[Icons]\nTheme=Tela\n",
+                   "[Icons]\nTheme=Breeze\n", "[Icons]\nTheme=Tela\n")
+        plan, outcome = self._run()
+        kept = outcome.directory / "removed" / "kdeglobals"
+        self.assertTrue(kept.is_file())
+        self.assertIn("Theme=Breeze", kept.read_text())
+
+    def test_the_journal_records_each_step_before_and_after(self):
+        self._make("[Icons]\nTheme=Papirus\n", "[Icons]\nTheme=Tela\n",
+                   "[Icons]\nTheme=Breeze\n", "[Icons]\nTheme=Tela\n")
+        plan, outcome = self._run()
+        events = [json.loads(line) for line in
+                  (outcome.directory / "journal.jsonl").read_text().splitlines()]
+        kinds = [e["event"] for e in events]
+        self.assertEqual(kinds[0], "start")
+        self.assertEqual(kinds[-1], "end")
+        self.assertIn("planned", kinds)
+        self.assertIn("done", kinds)
+        # The record has to say what the value was, or it cannot say where it
+        # stopped and what to put back.
+        planned = next(e for e in events if e["event"] == "planned")
+        self.assertEqual(planned["was"], "Breeze")
+
+    def test_a_changelog_row_is_emitted_for_pasting(self):
+        self._make("[Icons]\nTheme=Papirus\n", "[Icons]\nTheme=Tela\n",
+                   "[Icons]\nTheme=Breeze\n", "[Icons]\nTheme=Tela\n")
+        plan, outcome = self._run()
+        rows = restore.changelog_row(outcome)
+        self.assertTrue(rows)
+        self.assertTrue(any("Breeze" in r and "Papirus" in r for r in rows))
+        self.assertTrue(any("fake-id" in r for r in rows))
+
+    def test_neighbouring_keys_in_the_same_group_survive(self):
+        self._make("[Icons]\n", "[Icons]\nTheme=Tela\n",
+                   "[Icons]\nTheme=Breeze\nSizes=32\n", "[Icons]\nTheme=Tela\n")
+        self._run()
+        self.assertEqual(
+            kconfig.get(self.live / "kdeglobals", "Icons", "Sizes"), "32")
+
+
+class TestRestoreComponents(unittest.TestCase):
+    def test_components_are_derived_from_the_resolver_not_transcribed(self):
+        bundles = restore.components()
+        pointers = {k for keys in bundles.values() for k in keys}
+        for pointer in resolve.SIMPLE_POINTERS:
+            self.assertIn(pointer, pointers)
+
+    def test_the_decoration_bundle_carries_bordersize(self):
+        # library, theme and BorderSize share a group, and BorderSize in the
+        # user layer is a deliberate choice against the theme's declared
+        # value. Restoring the pair without it lets them drift.
+        keys = restore.components()["decoration"]
+        self.assertIn(("kwinrc", repair.DECO_GROUP, "BorderSize"), keys)
+        self.assertEqual(len(keys), 3)
+
+    def test_every_component_covers_at_least_one_key(self):
+        for name, keys in restore.components().items():
+            self.assertTrue(keys, name)
+
+
+class TestRestoreLock(unittest.TestCase):
+    def test_a_second_holder_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "lock"
+            first, second = restore.Lock(path), restore.Lock(path)
+            self.assertIsNone(first.acquire())
+            self.assertIn("lock held", second.acquire() or "")
+            first.release()
+            self.assertIsNone(second.acquire())
+
+    def test_a_stale_lock_names_the_flag_that_clears_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "lock"
+            path.write_text("999999")          # a pid that cannot be running
+            message = restore.Lock(path).acquire() or ""
+            self.assertIn("--break-lock", message)
+            self.assertIsNone(restore.Lock(path).acquire(break_stale=True))
+
+    def test_release_does_not_remove_someone_elses_lock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "lock"
+            path.write_text("999999")
+            restore.Lock(path).release()
+            self.assertTrue(path.exists())
 
 
 class TestThemeLookup(unittest.TestCase):

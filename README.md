@@ -80,7 +80,51 @@ lol-kde diff                        # latest snapshot vs the live system
 lol-kde diff A B                    # two snapshots
 lol-kde diff A B --changelog        # paste-ready CHANGELOG table
 lol-kde history                     # what this tool has done to your machine
+
+lol-kde restore <id>                # print a plan; writes nothing
+lol-kde restore <id> --apply        # actually do it, after confirming
+lol-kde restore <id> --component icons,decoration
 ```
+
+## `lol-kde restore` — put a snapshot back, one key at a time
+
+Restore has the largest blast radius in this program, so a bare
+`lol-kde restore <id>` **prints a plan and writes nothing**. Writing needs
+`--apply`, which prompts unless you add `--yes`. Snapshot ids are
+prefix-matched and typo-prone, and a mistyped id that happens to resolve to a
+*different valid snapshot* is the worst outcome available — and silent. The
+plan makes that visible for free, and ends with the exact command to proceed.
+
+It does not copy files back. Byte copies in a snapshot are evidence; the
+restore mechanism is replay, one `(file, group, key)` at a time, because
+restoring `kwinrc` wholesale to fix a window decoration also reverts your
+tiling layouts, your virtual desktops and your Xwayland scale.
+
+Three things it will tell you that a file copy cannot:
+
+- **`pin-lost`** — the value is right but comes from the wrong layer. It works
+  today and will not survive the next global-theme apply. Not folded into
+  `ok`, and not an error either.
+- **`stale`** — correct on disk, but no supported writer can tell the running
+  session, so it will not take effect until that component restarts. Said out
+  loud rather than quietly hoped over.
+- **`XDG_CONFIG_DIRS` changed** — the shape of the config cascade is different
+  from when the snapshot was taken, so inherited values may resolve
+  differently even after a perfect restore. This is usually the single most
+  useful line it prints.
+
+`~/.config/kdedefaults/` is never written — it is re-derived by re-applying
+the look-and-feel package, because hand-writing that layer is the canonical
+way to manufacture a state that never existed. Nothing is ever unlinked;
+replaced files go to `~/.lol-kde/restores/<ts>/removed/`. There is no
+automatic rollback, on purpose: a rollback is itself a restore, run by the
+code path that just demonstrated it can fail, at the moment the state is least
+understood. On failure it prints the journal path, the pre-restore snapshot id
+and the one command that undoes it.
+
+Scope is the components this tool models. It is not a backup system, and a
+theme tool that half-implements one is more dangerous than one that declines
+to — for that, use Timeshift, btrfs snapshots or etckeeper.
 
 ## `lol-kde snapshot` — a capture that can tell when it failed
 

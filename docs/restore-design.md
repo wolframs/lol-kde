@@ -1,12 +1,25 @@
 # `lol-kde restore` — design
 
-Not implemented. **Blocked on the three tests in
-[`open-questions.md`](open-questions.md)**; test C can invalidate §3 of this
-document.
+**Unblocked on turn 8.** All three tests in
+[`open-questions.md`](open-questions.md) are answered. Two of the answers
+changed this document:
 
-This is written so restore can be built later without re-deriving any of it.
-Every non-obvious decision below has its reason attached, because the reasons
-are the part that gets lost.
+- **Test C invalidated §2's "absent, inherited" row.** `kwriteconfig6 --delete`
+  writes a `Key[$d]` tombstone that *blocks* inheritance rather than revealing
+  it. The replacement mechanism is §1a.
+- **The 2026-08-02 session-loss incident constrains how §1a may be
+  implemented.** Read
+  [`incident-2026-08-02-kconfig-oom.md`](incident-2026-08-02-kconfig-oom.md)
+  before touching notification. A raw file edit is safe; synthesising the
+  notification that "should" accompany it is what destroyed a desktop.
+
+Test A confirmed §1's premise — KConfig merges on `sync()`, measured against a
+daemon that rewrote a group it owns and kept foreign keys planted after its
+last reparse. §1 stands as written.
+
+This is written so restore can be built without re-deriving any of it. Every
+non-obvious decision below has its reason attached, because the reasons are
+the part that gets lost.
 
 ---
 
@@ -79,6 +92,79 @@ It means "correct today, fragile tomorrow".
 
 ---
 
+## 1a. Un-pinning: the one raw file edit, and why it needs no new signal
+
+**Added turn 8, replacing the mechanism §2 originally assumed.**
+
+Restore has to express *"this key was not pinned in the user layer; it was
+inherited"*. The obvious primitive does not do that:
+
+> `kwriteconfig6 --delete` never removes a line. It writes `Key[$d]`, a
+> tombstone that blocks the cascade, so the key resolves to **nothing** —
+> not to the inherited value. Measured both ways round: from pinned, and from
+> already-absent. Same tombstone, same dead key.
+
+There is no flag for it. The whole option list is `--file --group --key --type
+--delete --notify`. So the only route is to remove the line from the file, and
+that is what `repair.unpin()` does. It is the single raw config write in the
+program and it lives in `repair.py` with the rest, per §9.
+
+### The two-step, and why the order is the whole point
+
+```
+1. kwriteconfig6 --file F --group G --key K <inherited value> --notify
+2. remove the K= line (and any K[$…] line) from ~/.config/F
+```
+
+Step 1 pins the value the cascade would supply anyway. It is a real KConfig
+write, so every running client learns the key resolves to V — through
+KConfig's own signal, emitted by KConfig's own writer, with the type KConfig
+chose.
+
+Step 2 then removes the pin. The key resolves to V again, from the layer
+below. **No resolved value changes at step 2**, so there is nothing to
+announce, and no notification has to be invented.
+
+That last clause is the design. The naive version — edit the file, then tell
+everyone — requires emitting `ConfigChanged` by hand, and:
+
+> **That is forbidden, and not because it is difficult to get right.** On
+> 2026-08-02 exactly that command, with `a{sas}` where KConfig sends
+> `a{saay}`, made every KDE client on the session bus allocate 4–6 GiB in
+> seconds. The kernel killed `kwin_wayland` and the session was lost.
+> Getting the signature right is not the fix; not being the one to send it is
+> the fix. See `CLAUDE.md`, "Hard rules", and `docs/dbus-harness.md`.
+
+The two-step is what lets restore be correct *and* stay inside the supported
+writer. It was chosen for safety and turns out to be simpler.
+
+### When there is nothing underneath
+
+If no lower layer defines the key, step 1 has nothing to write. The line is
+removed and the key now resolves to nothing — correct on disk, but running
+clients still hold the old value and no supported writer can tell them.
+
+Restore reports that as **`stale`**, distinct from success. It is the honest
+answer: the file is right, the session is not, and the fix is a restart of the
+affected component rather than another write. Do not paper over it by
+reaching for the forbidden emitter — the whole `stale` status exists so that
+nobody has to.
+
+### Consequences elsewhere in the codebase
+
+- `kconfig.read_cascade()` and `origin()` must treat `Key[$d]` as a deletion
+  of `Key`, not as a key called `Key[$d]`. Before turn 8 they did the latter,
+  so a tombstoned key was reported as inherited-and-fine while KDE resolved it
+  to nothing.
+- A bare `Key[$d]` line has no `=`, which `configparser` treats as a fatal
+  parse error, silently discarding **the rest of the file**. `khotkeysrc` was
+  being read as 492 keys of 644. Any snapshot taken before turn 8 is
+  incomplete for files containing a tombstone.
+- `repair.write(value=None)` returns `TOMBSTONED`, never `UNCHANGED`. The
+  previous report was a lie in the most dangerous direction.
+
+---
+
 ## 2. Granularity: per-key storage, per-component selection
 
 Store and compute **per-key**. Select **per-component**. Offer per-file only as
@@ -111,12 +197,18 @@ Every key records **four** facts, not one: resolved value, originating layer,
 user-layer value or `ABSENT`, `kdedefaults`-layer value or `ABSENT`. That gives
 four restorable states:
 
-| snapshot state | action |
-|---|---|
-| pinned in `~/.config` with V | `kwriteconfig6 … V --notify`, verify resolved **and** layer |
-| absent from `~/.config`, inherited V | `--delete`, verify resolved == V — **see question C** |
-| absent from every layer | `--delete`, verify nothing resolves |
-| present in `kdedefaults` | not writable by `kwriteconfig6` at all → §3 |
+| snapshot state | action | verify |
+|---|---|---|
+| pinned in `~/.config` with V | `repair.write(… V, notify=True)` | resolved == V **and** layer is `~/.config` |
+| absent from `~/.config`, inherited V | `repair.unpin()` — §1a. **Not `--delete`** | resolved == V and layer is *below* `~/.config` |
+| absent from every layer | `repair.unpin()`; expect `stale` | line gone; report that the session still holds the old value |
+| present in `kdedefaults` | not writable by `kwriteconfig6` at all → §3 | — |
+
+The second row is the one test C rewrote. `--delete` there would have produced
+a tombstone: resolved value `""`, cascade blocked, and a state the snapshot
+never contained. It would have verified as "key absent from the user layer",
+which is true and useless — the check that catches it is *resolved == V*, not
+*absent*.
 
 ---
 
@@ -315,7 +407,13 @@ retry" versus "your desktop is in an unknown state, here is the way back".
     is a report, not a download.
 12. No `--continue-on-error`, no `--resume`. Idempotency makes both
     unnecessary; shipping them would signal robustness the design lacks.
-13. **No merge / three-way restore** ("apply the snapshot's changes on top of my
+13. **No hand-emitted D-Bus notifications, under any circumstance.** Not for a
+    raw edit, not "just this once with the right signature", not behind a
+    flag. §1a reaches the same end state through `kwriteconfig6 --notify`;
+    where it cannot, the answer is the `stale` status, not a broadcast. This
+    is the one rule in this document that is not a trade-off — see
+    `incident-2026-08-02-kconfig-oom.md` for what it cost to learn.
+14. **No merge / three-way restore** ("apply the snapshot's changes on top of my
     current state"). Everyone will ask for it; there is no defensible semantics
     for it on a cascade with silent inheritance. `diff` plus `--key` gives the
     same power, explicitly.
@@ -329,7 +427,13 @@ retry" versus "your desktop is in an unknown state, here is the way back".
   verify in a new `restore.py` that calls them.
 - `repair.write()` already takes a `file` parameter, supports `--notify` and
   `--delete`, and returns a read-back result rather than an exit code — that
-  groundwork is done.
+  groundwork is done. Turn 8 added `unpin()` (§1a), `delete()` (honest about
+  the tombstone), `inherited_value()`, and the outcomes `UNPINNED`,
+  `TOMBSTONED` and `STALE`.
+- **`unpin()` takes `notify=False` for tests.** Unit tests run against a
+  temporary `XDG_CONFIG_HOME` and must not put anything on the real session
+  bus — not even a correctly-typed signal for a config file nothing reads.
+  Production callers leave the default alone.
 - `paths.CONFIG_FILES` is the shared manifest root. Snapshot, diff and restore
   must consume the same list, with a test that they cannot diverge.
 - Every `restore` run should print a paste-ready `CHANGELOG.md` table row. It

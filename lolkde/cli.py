@@ -20,6 +20,7 @@ from . import banner, catalog, compare, journal, snapshot
 from . import legacy
 from . import install as installer
 from . import manifest, repair, resolve
+from . import restore as restorer
 from .resolve import DEGRADED, MISSING, OK
 
 _COLOR = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
@@ -701,6 +702,133 @@ def _print_report(report: compare.Report, show_all: bool) -> None:
         print()
 
 
+_RESTORE_MARK = {
+    restorer.OK: ("ok", "32"), restorer.SAME: ("same", "2"),
+    restorer.PIN_LOST: ("pin-lost", "33"), restorer.STALE: ("stale", "33"),
+    restorer.DIVERGED: ("DIVERGED", "31"), restorer.FAILED: ("FAILED", "31"),
+    restorer.EXTRA: ("extra", "2"),
+}
+
+
+def cmd_restore(args: argparse.Namespace) -> int:
+    root = snapshot.find(args.snapshot)
+    if root is None:
+        return _no_such_snapshot(args.snapshot)
+
+    known = list(restorer.components())
+    selected = known if args.all or not args.component else [
+        name.strip() for name in args.component.split(",") if name.strip()]
+    unknown = [name for name in selected if name not in known]
+    if unknown:
+        print(f"error: unknown component(s): {', '.join(unknown)}", file=sys.stderr)
+        print(f"       known: {', '.join(known)}", file=sys.stderr)
+        return 2
+
+    plan = restorer.build(root, selected)
+    _print_plan(plan, args.verbose)
+
+    if plan.blockers:
+        return 2
+    if not args.apply:
+        if plan.writes:
+            print(_paint("\nNothing was written. To do it:", "1"))
+            print(f"  lol-kde restore {plan.snapshot_id} --apply"
+                  + ("" if args.all or not args.component
+                     else f" --component {','.join(selected)}"))
+        return 0
+    if not plan.writes:
+        print("\nNothing to do.")
+        return 0
+
+    if not args.yes:
+        try:
+            answer = input(f"\nApply {len(plan.writes)} change(s)? [y/N] ")
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 130
+        if answer.strip().lower() not in ("y", "yes"):
+            print("Nothing was written.")
+            return 0
+
+    lock = restorer.Lock()
+    held = lock.acquire(break_stale=args.break_lock)
+    if held:
+        print(f"error: {held}", file=sys.stderr)
+        return 2
+    try:
+        # Unconditional, and there is no flag to skip it: its only function
+        # would be to remove the artifact that makes this undoable.
+        print("\nSnapshotting first…")
+        before = snapshot.capture(reason="before restore",
+                                  message=f"before restore of {plan.snapshot_id}")
+        print(f"  {before['id']}")
+
+        outcome = restorer.run(plan, pre_snapshot=before["id"])
+    except KeyboardInterrupt:
+        print("\ninterrupted", file=sys.stderr)
+        return 130
+    finally:
+        lock.release()
+
+    _print_outcome(outcome)
+    return outcome.exit_code
+
+
+def _print_plan(plan, verbose: bool) -> None:
+    print(f"{plan.snapshot_id}  ->  live")
+    print(_paint(f"  components: {', '.join(plan.selected)}\n", "2"))
+
+    for step in plan.steps:
+        if step.action == restorer.SAME and not verbose:
+            continue
+        colour = "2" if step.action == restorer.SAME else "0"
+        print("  " + _paint(step.describe(), colour))
+        if step.note:
+            print(_detail(step.note, "      "))
+
+    if plan.unchanged and not verbose:
+        print(_paint(f"  ({plan.unchanged} already correct, -v to show)", "2"))
+
+    for warning in plan.warnings:
+        print("\n" + _paint("warning: ", "33") + warning)
+    for blocker in plan.blockers:
+        print("\n" + _paint("error: ", "31") + blocker)
+
+    if not plan.blockers:
+        print(f"\n  {len(plan.writes)} write(s), {plan.unchanged} unchanged")
+
+
+def _print_outcome(outcome) -> None:
+    print()
+    for step in outcome.steps:
+        if step.outcome in ("", restorer.EXTRA):
+            continue
+        label, colour = _RESTORE_MARK.get(step.outcome, (step.outcome, "0"))
+        print(f"  {_paint(label, colour):<20} "
+              f"{step.file}:{step.group}:{step.key}")
+        if step.detail and step.outcome != restorer.OK:
+            print(_detail(step.detail, "      "))
+
+    tally = "  ".join(f"{k}={v}" for k, v in sorted(outcome.tally().items()))
+    print(f"\n  {tally}")
+    print(_paint(f"  journal: {outcome.directory}/journal.jsonl", "2"))
+
+    if outcome.aborted:
+        # Three lines, and no automatic rollback: that would itself be a
+        # restore, run by the code path that just failed, when the state is
+        # least understood.
+        print(_paint("\n  aborted mid-restore. Nothing rolled back.", "31"))
+        print(f"  pre-restore snapshot: {outcome.pre_snapshot}")
+        print(f"  undo: lol-kde restore {outcome.pre_snapshot} --apply --yes")
+        return
+
+    rows = restorer.changelog_row(outcome)
+    if rows:
+        print(_paint("\n  CHANGELOG.md row:", "2"))
+        for row in rows:
+            print("  " + row)
+
+
 def cmd_history(args: argparse.Namespace) -> int:
     found = journal.entries(args.n)
     if not found:
@@ -806,6 +934,25 @@ def build_parser() -> argparse.ArgumentParser:
     dif.add_argument("--all", action="store_true",
                      help="include noisy sections and low-signal paths")
     dif.set_defaults(func=cmd_diff)
+
+    # Restore prints a plan and writes nothing unless asked twice. It has the
+    # largest blast radius in the program and should not be the least guarded;
+    # a mistyped id that resolves to a *different valid snapshot* is the worst
+    # outcome available, and it is silent. The plan makes that visible free.
+    res = sub.add_parser(
+        "restore", help="put a snapshot's theme settings back (prints a plan by default)",
+        epilog="kdedefaults is restored by re-deriving it, ~/.config by replay. "
+               "They cannot disagree because only one is ever written.")
+    res.add_argument("snapshot", help="snapshot id, or a unique prefix of one")
+    res.add_argument("--apply", action="store_true",
+                     help="actually write. Without this, nothing is written")
+    res.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    res.add_argument("--component", default="",
+                     help="comma-separated; default is all of them")
+    res.add_argument("--all", action="store_true", help="every component (the default)")
+    res.add_argument("--break-lock", action="store_true",
+                     help="take the lock from a process that is no longer running")
+    res.set_defaults(func=cmd_restore)
 
     hist = sub.add_parser("history", help="what this tool has done to your machine")
     hist.add_argument("-n", type=int, default=20, help="how many entries (0 = all)")

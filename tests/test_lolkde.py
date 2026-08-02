@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import io
 import json
 import os
 import sys
@@ -1820,6 +1821,240 @@ class TestDownloadVariants(unittest.TestCase):
 
     def test_empty_list_is_safe(self):
         self.assertEqual(store.best_match([], "anything"), 1)
+
+
+class TestDryRunReadsTheManifest(unittest.TestCase):
+    """A preview must not under-report what a real run installs.
+
+    `please --dry-run` used to list only the pling links an author wrote into
+    their description, because `X-KPackage-Dependencies` lives inside the
+    package and nothing had unpacked it yet. Layan: plan said 4 components, a
+    real run fetched 9. The fix downloads the package to a temporary directory
+    purely to read its manifest.
+    """
+
+    DEPS = ["kns://xcursor.knsrc/api.kde-look.org/1393084",
+            "kns://icons.knsrc/api.kde-look.org/1279924",
+            "kns://plasma-themes.knsrc/api.kde-look.org/1325243"]
+
+    def _package(self, tmp: Path, *, wrapped: bool, deps=None) -> Path:
+        """An extracted look-and-feel package, with or without a wrapper dir."""
+        root = tmp / "unpacked"
+        pkg = (root / "com.github.vinceliuice.Layan") if wrapped else root
+        (pkg / "contents").mkdir(parents=True)
+        (pkg / "metadata.json").write_text(json.dumps({
+            "KPlugin": {"Name": "Layan"},
+            "X-KPackage-Dependencies": self.DEPS if deps is None else deps,
+        }))
+        return root
+
+    def test_metadata_is_found_at_the_top_level(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._package(Path(tmp), wrapped=False)
+            self.assertEqual(manifest.find_metadata(root).parent, root)
+
+    def test_metadata_is_found_one_level_down(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._package(Path(tmp), wrapped=True)
+            found = manifest.find_metadata(root)
+            self.assertEqual(found.parent.name, "com.github.vinceliuice.Layan")
+
+    def test_metadata_deeper_than_one_level_is_not_claimed(self):
+        # A metadata.json three levels down belongs to something else, and
+        # reading it would attribute another package's dependencies to this one.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "unpacked"
+            deep = root / "a" / "b" / "c"
+            deep.mkdir(parents=True)
+            (deep / "metadata.json").write_text("{}")
+            self.assertIsNone(manifest.find_metadata(root))
+
+    def test_dependencies_are_parsed_out_of_an_extracted_tree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._package(Path(tmp), wrapped=True)
+            deps = manifest.dependencies_in_tree(root)
+        self.assertEqual([d.content_id for d in deps],
+                         ["1393084", "1279924", "1325243"])
+        self.assertEqual(deps[0].knsrc, "xcursor")
+
+    def test_a_broken_metadata_file_yields_nothing_rather_than_raising(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "unpacked"
+            root.mkdir()
+            (root / "metadata.json").write_text("{not json")
+            self.assertEqual(manifest.dependencies_in_tree(root), [])
+
+    def test_a_package_with_no_manifest_yields_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "unpacked"
+            root.mkdir()
+            self.assertEqual(manifest.dependencies_in_tree(root), [])
+
+    # -- peek_dependencies ------------------------------------------------
+
+    def _archive(self, tmp: Path) -> Path:
+        """A real .tar.gz of a look-and-feel package, as the store would serve."""
+        staging = tmp / "staging" / "com.github.vinceliuice.Layan"
+        (staging / "contents").mkdir(parents=True)
+        (staging / "metadata.json").write_text(json.dumps(
+            {"X-KPackage-Dependencies": self.DEPS}))
+        archive = tmp / "Layan.tar.gz"
+        with tarfile.open(archive, "w:gz") as handle:
+            handle.add(staging, arcname="com.github.vinceliuice.Layan")
+        return archive
+
+    class _Node:
+        content_id = "1325243"
+        host = "api.kde-look.org"
+        route = None
+
+        def __init__(self, item):
+            self.item = item
+
+    def _item(self):
+        return store.StoreItem(content_id="1325243", name="Layan", typename="",
+                               xdg_type="", author="", downloads="")
+
+    def test_peek_returns_the_declared_dependencies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = self._archive(Path(tmp))
+            target = store.DownloadTarget(url="https://host/x.tar.gz",
+                                          filename="Layan.tar.gz", mimetype="")
+            with unittest.mock.patch.object(store, "choose_download", return_value=1), \
+                 unittest.mock.patch.object(store, "fetch_download", return_value=target), \
+                 unittest.mock.patch.object(
+                     store, "download",
+                     side_effect=lambda t, dest: (dest.write_bytes(
+                         archive.read_bytes()), dest)[1]):
+                deps, note = install.peek_dependencies(self._Node(self._item()))
+        self.assertEqual(note, "")
+        self.assertEqual([d.content_id for d in deps],
+                         ["1393084", "1279924", "1325243"])
+
+    def test_peek_installs_nothing(self):
+        # The whole point: bytes cross the network, the disk outside the
+        # temporary directory does not change.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            archive = self._archive(tmpdir)
+            home = tmpdir / "home"
+            (home / ".local/share/plasma/look-and-feel").mkdir(parents=True)
+            before = sorted(p.relative_to(home) for p in home.rglob("*"))
+            target = store.DownloadTarget(url="https://host/x.tar.gz",
+                                          filename="Layan.tar.gz", mimetype="")
+            with unittest.mock.patch.object(store, "choose_download", return_value=1), \
+                 unittest.mock.patch.object(store, "fetch_download", return_value=target), \
+                 unittest.mock.patch.object(
+                     store, "download",
+                     side_effect=lambda t, dest: (dest.write_bytes(
+                         archive.read_bytes()), dest)[1]):
+                install.peek_dependencies(self._Node(self._item()))
+            after = sorted(p.relative_to(home) for p in home.rglob("*"))
+        self.assertEqual(before, after)
+
+    def test_peek_reports_why_it_found_nothing(self):
+        with unittest.mock.patch.object(
+                store, "choose_download",
+                side_effect=store.StoreError("status 999: unknown request")):
+            deps, note = install.peek_dependencies(self._Node(self._item()))
+        self.assertEqual(deps, [])
+        self.assertIn("999", note)
+
+    def test_peek_needs_a_looked_up_item(self):
+        deps, note = install.peek_dependencies(self._Node(None))
+        self.assertEqual(deps, [])
+        self.assertIn("could not be looked up", note)
+
+    # -- the plan the CLI prints ------------------------------------------
+
+    class _Args:
+        no_manifest = False
+
+    def _root(self, category="lookandfeel"):
+        node = catalog.Node(content_id="1325243", host="api.kde-look.org")
+        node.item = store.StoreItem(content_id="1325243", name="Layan",
+                                    typename="Global Theme", xdg_type="",
+                                    author="", downloads="")
+        node.route = catalog.Route(category=category, target=Path("/tmp/x"))
+        return node
+
+    def _dep(self, content_id, knsrc="icons"):
+        return manifest.Dependency(knsrc, "api.kde-look.org", content_id,
+                                   f"kns://{knsrc}.knsrc/h/{content_id}")
+
+    def test_manifest_ids_already_in_the_description_are_not_repeated(self):
+        root = self._root()
+        described = catalog.Node(content_id="1279924", host="h")
+        described.item = self._item()
+        with unittest.mock.patch.object(
+                install, "peek_dependencies",
+                return_value=([self._dep("1279924"), self._dep("1393084")], "")), \
+             unittest.mock.patch.object(
+                catalog, "fetch", return_value=(self._item(), "h")), \
+             unittest.mock.patch.object(catalog, "route_for", return_value=None):
+            extra = cli._manifest_only_components(
+                root, [root, described], self._Args())
+        self.assertEqual([n.content_id for n in extra], ["1393084"])
+
+    def test_no_manifest_flag_skips_the_fetch_entirely(self):
+        args = self._Args()
+        args.no_manifest = True
+        with unittest.mock.patch.object(install, "peek_dependencies") as peek:
+            extra = cli._manifest_only_components(self._root(), [], args)
+        peek.assert_not_called()
+        self.assertEqual(extra, [])
+
+    def test_non_lookandfeel_roots_are_not_downloaded(self):
+        # Only global themes carry X-KPackage-Dependencies. Fetching an icon
+        # theme's archive to discover that would cost megabytes for nothing.
+        with unittest.mock.patch.object(install, "peek_dependencies") as peek:
+            extra = cli._manifest_only_components(
+                self._root(category="icons"), [], self._Args())
+        peek.assert_not_called()
+        self.assertEqual(extra, [])
+
+    def test_a_lookup_failure_still_lists_the_component(self):
+        # Better to show "could not be looked up" than to silently drop it and
+        # under-report again by a different route.
+        with unittest.mock.patch.object(
+                install, "peek_dependencies",
+                return_value=([self._dep("1393084")], "")), \
+             unittest.mock.patch.object(
+                catalog, "fetch", side_effect=store.StoreError("gone")):
+            extra = cli._manifest_only_components(self._root(), [], self._Args())
+        self.assertEqual(len(extra), 1)
+        self.assertIsNone(extra[0].item)
+
+    def test_manifest_components_route_by_declared_knsrc_not_store_category(self):
+        # Layan's SDDM theme has no xdg_type and no known type id, so routing
+        # it from the store category printed "?  unknown content type" -- while
+        # the real run routed it correctly, because install_dependency uses
+        # knsrc.load(dependency.knsrc). The manifest names the knsrc outright;
+        # a forecast that ignores it is guessing against available evidence.
+        with unittest.mock.patch.object(
+                install, "peek_dependencies",
+                return_value=([self._dep("1325235", knsrc="sddmtheme")], "")), \
+             unittest.mock.patch.object(
+                catalog, "fetch", return_value=(self._item(), "h")):
+            extra = cli._manifest_only_components(self._root(), [], self._Args())
+        self.assertEqual(len(extra), 1)
+        self.assertTrue(extra[0].route.known)
+        self.assertTrue(extra[0].route.needs_root)
+
+    def test_needs_root_components_say_they_will_be_skipped(self):
+        node = catalog.Node(content_id="1", host="h")
+        node.item = self._item()
+        node.route = cli._route_from_knsrc("sddmtheme")
+        with unittest.mock.patch("sys.stdout", new=io.StringIO()) as out:
+            cli._print_component(node)
+        self.assertIn("needs root", out.getvalue())
+
+    def test_the_dry_run_no_longer_claims_it_downloads_nothing(self):
+        # It does download: the package, to a temp dir, to read the manifest.
+        # The help text and the closing line have to say so.
+        source = inspect.getsource(cli.cmd_please)
+        self.assertNotIn("nothing downloaded", source)
+        self.assertIn("nothing installed", source)
 
 
 if __name__ == "__main__":

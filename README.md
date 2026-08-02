@@ -248,10 +248,32 @@ The description names 4 further components:
   +  Layan wallpaper        Wallpapers KDE Plasma   ~/.local/share/wallpapers
 ```
 
-It then reconciles that list against the installed package's
-`X-KPackage-Dependencies`, because the two disagree: Layan's description names 4
-components, its manifest names 7, and only the manifest mentions the cursor theme.
-Result is 6/6 resolved from one URL.
+It then reconciles that list against the package's `X-KPackage-Dependencies`,
+because the two disagree: Layan's description names 4 components, its manifest
+names 7, and only the manifest mentions the cursor theme. Result is 6/6
+resolved from one URL.
+
+`--dry-run` reconciles the same two lists, so the plan is a forecast rather
+than a floor:
+
+```sh
+$ lol-kde please 1325243 --dry-run
+...
+Fetching the package to read its manifest (temporary directory, nothing installed) ...
+  its manifest declares 7 dependencies, 5 of which the description does not name:
+  +  Layan color schemes    Plasma Color Schemes   ~/.local/share/color-schemes
+  +  Layan plasma theme     Plasma Themes          kpackagetool6
+  +  Layan aurorae theme    Plasma 6 Window Decs   ~/.local/share/aurorae/themes
+  +  Layan sddm theme       SDDM Login Themes      /usr/share/sddm/themes  (needs root; will be skipped)
+  +  Layan cursors          Cursors                ~/.icons
+
+Dry run: nothing installed. 10 components in total.
+```
+
+The manifest is inside the package, so reading it means fetching the package —
+into a temporary directory that is then discarded. **The dry run downloads;
+it does not install.** `--no-manifest` skips that and reports the description
+only, which is the old, lower number.
 
 Three things this has to get right, each learned the hard way:
 

@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import knsrc, store
-from .manifest import Dependency
+from .manifest import Dependency, dependencies_in_tree as manifest_deps
 
 
 @dataclass
@@ -235,6 +235,56 @@ def install_from_store(node, *, force: bool = False, dry_run: bool = False):
         except (OSError, ValueError, RuntimeError, tarfile.TarError,
                 zipfile.BadZipFile) as exc:
             return "failed", str(exc), None
+
+
+def peek_dependencies(node, *, prefer: str = "") -> tuple[list[Dependency], str]:
+    """Read a store item's declared dependencies without installing anything.
+
+    `please --dry-run` used to list only what the *description* links to,
+    because `X-KPackage-Dependencies` lives in the package's `metadata.json`
+    and nothing had unpacked the package yet. For Layan that meant a plan of
+    four components ahead of a run that fetched nine. A preview that
+    under-reports scope is worse than no preview.
+
+    So: fetch the root archive into a temporary directory, unpack it, read the
+    manifest, throw all of it away. Bytes cross the network, but nothing is
+    written outside the temporary directory and nothing is installed.
+
+    Reading an already-installed copy instead was considered and rejected. A
+    store entry's display name ("Layan look and feel theme") is not its
+    directory name (`com.github.vinceliuice.Layan`), so matching one to the
+    other means guessing -- and a wrong guess reads *another theme's*
+    dependency list and presents it as this one's. Being slow beats being
+    confidently wrong.
+
+    Returns the dependencies and a note explaining any empty result.
+    """
+    if node.item is None:
+        return [], "the item could not be looked up"
+
+    try:
+        index = store.choose_download(node.host, node.content_id, prefer)
+        target = store.fetch_download(node.host, node.content_id, index)
+    except store.StoreError as exc:
+        return [], str(exc)
+
+    with tempfile.TemporaryDirectory(prefix="lol-kde-peek-") as tmp:
+        tmpdir = Path(tmp)
+        try:
+            archive = store.download(target, tmpdir / target.filename)
+        except store.StoreError as exc:
+            return [], str(exc)
+        if not is_archive(archive):
+            return [], f"{target.filename} is not an archive"
+        try:
+            extracted, _ = _safe_extract(archive, tmpdir / "unpacked")
+        except (OSError, ValueError, tarfile.TarError, zipfile.BadZipFile) as exc:
+            return [], str(exc)
+
+        deps = manifest_deps(extracted)
+        if not deps:
+            return [], "the package declares no X-KPackage-Dependencies"
+        return deps, ""
 
 
 def install_dependency(

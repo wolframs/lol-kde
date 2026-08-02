@@ -62,7 +62,6 @@ value and needed no announcement. `diff` independently reported
 | still open | why | settles it |
 |---|---|---|
 | a `[$d]` tombstone in `kdedefaults` behaves the same as one in `~/.config` | only the user layer was tested | plant one in the `kdedefaults` copy of a throwaway file and read the cascade |
-| `please <url>`'s **plan** under-reports what a real run installs | the dry run lists only what the *description* names; the manifest is consulted after the root package is installed, so `--dry-run` cannot see it. For Layan: plan says 4–5 components, a real run also fetches colorschemes, plasma-themes, aurorae, sddmtheme and xcursor | make the dry run fetch the root's `metadata.json` (or read an installed copy) and show the union. Until then the plan is a floor, not a forecast |
 | store content `1918450` (Stone's wallpaper) returns `status 999: unknown request` | observed turn 9 on every attempt; other ids on the same host work | try again later — if it persists the entry is gone and Stone's manifest is stale |
 
 Not open questions, but carried here so they are not lost — both are outside
@@ -71,6 +70,27 @@ this repo and were surfaced by the incident postmortem:
 - the host has 64 GiB RAM and **512 MiB swap**, with no early-OOM policy
 - `an unrelated systemd unit` restarts every ten seconds (`node` missing
   from the unit's `PATH`) and floods the journal
+
+## Settled on turn 14 — `please --dry-run` is a forecast now
+
+The plan used to list only the pling links in the description, because
+`X-KPackage-Dependencies` lives inside the package and nothing had unpacked it.
+The dry run now fetches the package into a temporary directory, reads
+`metadata.json`, and discards it. Measured live against Layan (`1325243`):
+**5 components before, 10 after** — colorschemes, plasma-themes, aurorae,
+sddmtheme and xcursor were all invisible to the old plan.
+
+Reading an already-installed copy instead was rejected: the store's display
+name ("Layan look and feel theme") is not the directory name
+(`com.github.vinceliuice.Layan`), so matching them means guessing, and a wrong
+guess shows another theme's dependencies as this one's.
+
+One thing the fix exposed: routing a manifest dependency from the *store
+item's* category rather than the knsrc the manifest names got Layan's SDDM
+theme wrong (`? unknown content type`), because that category has no
+`xdg_type` and no known numeric id. A real run was always right, since
+`install_dependency` uses `knsrc.load(dependency.knsrc)`. The dry run now does
+the same. **Where the manifest states a fact, do not re-derive it.**
 
 ## Opened by turn 13 — terminal translucency
 

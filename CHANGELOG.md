@@ -12,6 +12,52 @@ Wolfram. Turn 1 is the first message after the context compaction on
 
 ---
 
+## Turn 14 — `please --dry-run` stops under-reporting
+
+### repo
+
+`bb8fe57..` — no machine changes this turn.
+
+The dry run listed only what a theme's *description* links to. The manifest
+(`X-KPackage-Dependencies`) lives inside the package, and nothing had unpacked
+the package at plan time, so the plan was a floor. Measured live against Layan
+(`1325243`):
+
+| | components in the plan |
+|---|---|
+| before | **5** |
+| after | **10** |
+
+The five it could not see: colorschemes, plasma-themes, aurorae, sddmtheme,
+xcursor. A preview that under-reports scope is worse than no preview, which is
+why this went ahead of the public-repo review.
+
+- `manifest.find_metadata()` / `manifest.dependencies_in_tree()` — read a
+  manifest out of an extracted tree. Searches one level deep and no further:
+  a `metadata.json` three levels down belongs to something else.
+- `install.peek_dependencies()` — fetch the package to a temporary directory,
+  unpack, read, discard. Nothing is installed and nothing is written outside
+  the temporary directory; there is a test that asserts exactly that.
+- `--no-manifest` on `please` and `no-thank-you` keeps the old behaviour.
+- `--dry-run`'s help no longer says "download nothing", because it does
+  download. It says "install nothing", which is what is actually true.
+
+### Where the manifest states a fact, do not re-derive it
+
+First cut routed each manifest dependency by looking the id up on the store and
+reading its category. Layan's SDDM theme came out as `? unknown content type`,
+because that category has no `xdg_type` and no numeric id we map. A real run
+was always right — `install_dependency` calls `knsrc.load(dependency.knsrc)`,
+and the manifest says `kns://sddmtheme.knsrc/...` outright.
+
+Caught by comparing the live dry run against the live install rather than by a
+test, which is the only reason it was caught at all. The plan now routes
+through the declared knsrc and reports `needs root; will be skipped` for it.
+
+191 tests.
+
+---
+
 ## Turn 13 — terminal translucency, and a blocker that was never a blocker
 
 ### machine

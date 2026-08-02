@@ -85,6 +85,44 @@ def parse_dependencies(metadata: dict) -> list[Dependency]:
     return deps
 
 
+def find_metadata(root: Path) -> Path | None:
+    """Locate `metadata.json` inside a freshly extracted package.
+
+    An upload is either the package directory itself or a wrapper holding one,
+    and both shapes occur. Nothing deeper is searched: a `metadata.json` three
+    levels down belongs to something else -- a bundled sub-package, a leftover
+    example -- and reading it would attribute the wrong dependency list to the
+    theme.
+    """
+    direct = root / "metadata.json"
+    if direct.is_file():
+        return direct
+    for child in sorted(p for p in root.iterdir() if p.is_dir()):
+        candidate = child / "metadata.json"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def dependencies_in_tree(root: Path) -> list[Dependency]:
+    """`X-KPackage-Dependencies` of an extracted package, without installing it.
+
+    This is what makes `please --dry-run` a forecast rather than a floor. The
+    description and the manifest are different lists by different authors, and
+    the manifest is normally the longer one -- so a plan built from the
+    description alone under-reports, which is the worst direction for a preview
+    to be wrong in.
+    """
+    metadata_json = find_metadata(root)
+    if metadata_json is None:
+        return []
+    try:
+        data = json.loads(metadata_json.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return []
+    return parse_dependencies(data)
+
+
 def load(name: str) -> GlobalTheme:
     path = find(name)
     if path is None:

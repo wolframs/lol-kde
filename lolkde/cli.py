@@ -16,10 +16,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-from . import banner, catalog, compare, journal, snapshot
+from . import banner, catalog, compare, journal, knsrc, snapshot
 from . import legacy
 from . import install as installer
-from . import manifest, repair, resolve
+from . import manifest, repair, resolve, store
 from . import prune as pruner
 from . import restore as restorer
 from .resolve import DEGRADED, MISSING, OK
@@ -217,6 +217,91 @@ def cmd_legacy(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_component(node) -> None:
+    """One line of a `please` plan."""
+    if node.item is None:
+        print(f"  {_paint('?', '31')}  {node.content_id}  "
+              f"{_paint('could not be looked up', '2')}")
+        return
+    route = node.route
+    where = (str(route.target) if route and route.target
+             else "kpackagetool6" if route and route.uses_kpackage else "?")
+    if route and route.needs_root:
+        # A real run skips these. Saying so here keeps the plan a forecast.
+        where += "  (needs root; will be skipped)"
+    mark = _paint("+", "32") if route and route.known else _paint("?", "33")
+    print(f"  {mark}  {node.item.name:<30} {node.item.typename:<26} "
+          f"{_paint(where, '2')}")
+
+
+def _route_from_knsrc(name: str) -> catalog.Route:
+    """The route a manifest dependency will actually take when installed."""
+    spec = knsrc.load(name)
+    return catalog.Route(category=name, target=spec.target,
+                         uncompress=spec.uncompress,
+                         kpackage_type=spec.kpackage_type,
+                         needs_root=spec.needs_root,
+                         known=spec.found or spec.uses_kpackage)
+
+
+def _manifest_only_components(root, nodes, args) -> list:
+    """Components the root's manifest declares that its description does not.
+
+    Without this the dry run reports a **floor**: it sees only the pling links
+    an author wrote in their description prose, while a real run goes on to
+    read `X-KPackage-Dependencies` out of the installed package and fetch
+    whatever else that names. Layan's description names four components; its
+    manifest names seven, and only the manifest mentions the cursors. A
+    preview that quietly under-reports what it is about to install is the one
+    kind of preview that is worse than none.
+
+    Costs one archive download (to a temporary directory, discarded) plus one
+    store lookup per newly discovered id. `--no-manifest` skips it.
+    """
+    if getattr(args, "no_manifest", False):
+        print(_paint("\nManifest not read (--no-manifest): the list above is "
+                     "what the description names, which is a floor.", "2"))
+        return []
+    if not (root.route and root.route.category == "lookandfeel"):
+        return []
+
+    print(_paint("\nFetching the package to read its manifest "
+                 "(temporary directory, nothing installed) ...", "2"))
+    deps, note = installer.peek_dependencies(root)
+    if not deps:
+        print(_paint(f"  manifest not read: {note}. The list above is a floor.", "2"))
+        return []
+
+    known = {node.content_id for node in nodes}
+    extra: list = []
+    for dep in deps:
+        if dep.content_id in known:
+            continue
+        known.add(dep.content_id)
+        node = catalog.Node(content_id=dep.content_id, host=dep.host)
+        # Route from the knsrc the manifest names, not from the store item's
+        # category. The manifest is authoritative -- it says `kns://sddmtheme`
+        # outright -- and it is what a real run uses (`install_dependency`
+        # calls `knsrc.load(dependency.knsrc)`). Deriving the route from the
+        # store category instead guesses, and guesses wrong for exactly the
+        # categories that have no xdg_type: Layan's SDDM theme printed as an
+        # unknown content type here while the real run routed it correctly.
+        node.route = _route_from_knsrc(dep.knsrc)
+        try:
+            node.item, node.host = catalog.fetch(dep.content_id, dep.host)
+        except store.StoreError:
+            node.item = None
+        extra.append(node)
+
+    if not extra:
+        print(_paint(f"  its manifest declares {len(deps)} dependencies, all "
+                     f"of them already named above.", "2"))
+        return []
+    print(_paint(f"  its manifest declares {len(deps)} dependencies, "
+                 f"{len(extra)} of which the description does not name:", "2"))
+    return extra
+
+
 def cmd_please(args: argparse.Namespace) -> int:
     """Install a store page and everything its description says it needs."""
     content_id = catalog.parse_url(args.url)
@@ -243,19 +328,15 @@ def cmd_please(args: argparse.Namespace) -> int:
                      f"component{'s' if extra != 1 else ''}:", "2"))
 
     for node in nodes[1:]:
-        if node.item is None:
-            print(f"  {_paint('?', '31')}  {node.content_id}  "
-                  f"{_paint('could not be looked up', '2')}")
-            continue
-        route = node.route
-        where = (str(route.target) if route and route.target
-                 else "kpackagetool6" if route and route.uses_kpackage else "?")
-        mark = _paint("+", "32") if route and route.known else _paint("?", "33")
-        print(f"  {mark}  {node.item.name:<30} {node.item.typename:<26} "
-              f"{_paint(where, '2')}")
+        _print_component(node)
 
     if args.dry_run:
-        print(_paint("\nDry run: nothing downloaded.", "2"))
+        extra_nodes = _manifest_only_components(root, nodes, args)
+        for node in extra_nodes:
+            _print_component(node)
+        total = len(nodes) + len(extra_nodes)
+        print(_paint(f"\nDry run: nothing installed. {total} component"
+                     f"{'s' if total != 1 else ''} in total.", "2"))
         return 0
 
     if not args.yes:
@@ -991,13 +1072,20 @@ def build_parser() -> argparse.ArgumentParser:
     nope.add_argument("url", help="store page URL, or a bare content id")
     nope.add_argument("--depth", type=int, default=1,
                       help="how far to follow dependency links (default 1)")
+    nope.add_argument("--no-manifest", action="store_true",
+                      help="do not fetch the package to read its dependency manifest")
     nope.set_defaults(func=cmd_please, dry_run=True, force=False, yes=True)
 
     pls = sub.add_parser("please", help="install a store page and everything its description names")
     pls.add_argument("url", help="opendesktop/pling/store.kde.org page URL, or a bare content id")
     pls.add_argument("--depth", type=int, default=1,
                      help="how far to follow dependency links (default 1)")
-    pls.add_argument("--dry-run", action="store_true", help="resolve but download nothing")
+    # Not "downloads nothing": reading the manifest needs the package, so the
+    # dry run fetches it to a temporary directory. It installs nothing.
+    pls.add_argument("--dry-run", action="store_true",
+                     help="resolve and report; install nothing")
+    pls.add_argument("--no-manifest", action="store_true",
+                     help="skip the manifest fetch; report only what the description names")
     pls.add_argument("--force", action="store_true", help="replace already-installed content")
     pls.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     pls.set_defaults(func=cmd_please)

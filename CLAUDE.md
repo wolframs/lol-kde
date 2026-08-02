@@ -321,17 +321,32 @@ They load, but plasmashell was observed aborting inside
 Aurorae decorations use `metadata.desktop` as their **normal** format — never
 flag those as legacy.
 
-## Machine state as of 2026-08-02 (end of turn 7)
+## Machine state as of 2026-08-02 (end of turn 9)
 
 Do not trust this section blind — run `lol-kde doctor -v` and
 `lol-kde diff` first. It is a starting point, not a source of truth.
 
-- Applied: `com.github.vinceliuice.Layan`, `7/7 ok`
+- Applied: `com.github.vinceliuice.Layan`, `7/7 ok` — and **confirmed on
+  screen by Wolfram** at the end of turn 9, not just by the tool. That
+  distinction is the whole point of the `7/7 ok` rule above
+- Every critical path has now been run against this live desktop: `install`,
+  `apply`, `restore --apply`, `legacy --remove`, `please`, `diff`, `snapshot`.
+  See `CHANGELOG.md` turn 9 for what each one broke
+- Extra packages from the turn-9 `install` test: Nostrum's aurorae theme,
+  Plasma style, wallpaper and colour scheme. Harmless, not applied. The
+  removal command is in the turn-9 CHANGELOG row
+- The `Gently` Plasma style was **deleted** by the `legacy --remove` test.
+  Re-download from the store if it is ever wanted; snapshots do not carry
+  theme assets
 - Kvantum: theme `Layan`, `reduce_window_opacity=15` (backup `.bak` has `0`)
 - Window translucency: **working**, confirmed visually
 - Decoration: `org.kde.kwin.aurorae.v2` pinned in `~/.config/kwinrc`;
   `theme=__aurorae__svg__Layan` is *inherited* from `kdedefaults`, not pinned —
-  the write no-opped and that is fine (backup: `~/.config/kwinrc.lolkde.bak`)
+  the write no-opped and that is fine. **The `library` pin does not survive
+  an apply**: `plasma-apply-lookandfeel` deletes it and `lol-kde apply`'s
+  repair rewrites it, every single time (turn 9, measured). `BorderSize=Normal`
+  in the same group survives, because the package does not declare it.
+  Backups: `~/.config/kwinrc.lolkde.bak`, `.lolkde-turn8.bak`, `.lolkde-turn9.bak`
 - Displays: two 2560x1440 at scale **1.25** (2048x1152 logical each, exact on
   both axes), DP-2 at x=2048. `[Xwayland] Scale=1.25`
 - Compositor: `gl2`, NVIDIA, Wayland. Blur loaded; `contrast` refuses to load.

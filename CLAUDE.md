@@ -182,6 +182,22 @@ renders buttons by state id, and all five states — `active-center`,
 measure ~80% covered with real artwork. Cosmetic log spam only. Deleting the
 one `<use>` line silences it; upstream is `github.com/vinceliuice/Layan-kde`.
 
+## Pre-scaled Aurorae variants are broken by construction
+
+WhiteSur ships `WhiteSur-dark`, `_x1.25` and `_x1.5`. The SVG artwork really
+is scaled — `decoration-top` measures 66 → 83 → 99px, exactly 1.25x and 1.5x.
+The `<theme>rc` holding the layout metrics is **byte-identical** across all
+three (`md5 31175c98`): `TitleHeight=16`, `PaddingTop=36`, `ButtonWidth=16`.
+
+Aurorae positions the frame from the rc and draws the artwork at its natural
+size, so large art lands in a small frame: the titlebar detaches from the
+window body and the buttons sit off the bar. `resolve.aurorae_scale_mismatch()`
+catches it by comparing the rc against the unsuffixed sibling; it flags
+exactly the five broken variants installed here and nothing else.
+
+Fixing one properly means multiplying every `[Layout]` number by the same
+factor. Not done — nobody here uses these themes.
+
 ## Measuring anything on screen under Wayland
 
 **A Wayland client cannot know where it is.** `QWidget::setGeometry()` position

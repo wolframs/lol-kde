@@ -12,6 +12,7 @@ Three outcomes:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -244,6 +245,53 @@ def aurorae_provider() -> str:
     return AURORAE_LEGACY_PLUGIN
 
 
+SCALED_VARIANT = re.compile(r"^(?P<base>.+?)_x(?P<factor>[0-9]+(?:\.[0-9]+)?)$")
+
+
+def _aurorae_rc(theme_dir: Path) -> Path | None:
+    """An Aurorae theme's layout file: <dir>/<dirname>rc."""
+    candidate = theme_dir / f"{theme_dir.name}rc"
+    if candidate.is_file():
+        return candidate
+    rest = sorted(theme_dir.glob("*rc"))
+    return rest[0] if rest else None
+
+
+def aurorae_scale_mismatch(theme_dir: Path) -> str:
+    """A pre-scaled Aurorae variant whose layout numbers were never scaled.
+
+    WhiteSur ships WhiteSur-dark alongside WhiteSur-dark_x1.25 and _x1.5. The
+    SVG artwork genuinely is scaled -- measured with QSvgRenderer, the
+    decoration-top element goes 66px -> 83px -> 99px, exactly 1.25x and 1.5x.
+    The <theme>rc that tells Aurorae where to *put* that artwork is
+    byte-identical in all three: TitleHeight=16, PaddingTop=36, ButtonWidth=16.
+
+    So Aurorae lays the frame out with the small numbers and draws the large
+    artwork into it. The titlebar detaches from the window body and the
+    buttons sit off the bar. Every _x variant in that package has it.
+
+    Returns an explanation, or "" if the theme is fine.
+    """
+    match = SCALED_VARIANT.match(theme_dir.name)
+    if not match:
+        return ""
+    sibling = theme_dir.parent / match.group("base")
+    if not sibling.is_dir():
+        return ""
+    mine, theirs = _aurorae_rc(theme_dir), _aurorae_rc(sibling)
+    if not mine or not theirs:
+        return ""
+    try:
+        if mine.read_bytes() != theirs.read_bytes():
+            return ""
+    except OSError:
+        return ""
+    return (f"artwork is pre-scaled to {match.group('factor')}x but its layout "
+            f"metrics are byte-identical to {sibling.name!r}; Aurorae will "
+            f"place large artwork in a small frame and the titlebar will "
+            f"detach from the window")
+
+
 def decoration(library: str, theme: str) -> Resolution:
     """Window decoration. The titlebar and borders, and nothing else."""
     value = theme or library
@@ -263,6 +311,11 @@ def decoration(library: str, theme: str) -> Resolution:
         if not (hit / "decoration.svg").is_file():
             r.status = DEGRADED
             r.detail = "theme directory exists but has no decoration.svg"
+            return r
+        mismatch = aurorae_scale_mismatch(hit)
+        if mismatch:
+            r.status = DEGRADED
+            r.detail = mismatch
             return r
         provider = aurorae_provider()
         if library and library != provider:

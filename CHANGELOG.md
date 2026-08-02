@@ -12,6 +12,21 @@ Wolfram. Turn 1 is the first message after the context compaction on
 
 ---
 
+## Turn 3 — pre-scaled Aurorae variants
+
+### machine
+
+No changes.
+
+### repo
+
+- `resolve.aurorae_scale_mismatch()` — flags `_x1.25` / `_x1.5` Aurorae
+  variants whose `<theme>rc` is byte-identical to their unscaled sibling.
+  Catches the five broken WhiteSur variants installed here, and nothing else.
+- 62 → 66 tests
+
+---
+
 ## Turn 2 — Aurorae plugin split
 
 ### machine

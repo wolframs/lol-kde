@@ -139,6 +139,42 @@ class TestAuroraePlugin(unittest.TestCase):
         self.assertEqual(repair.DECO_GROUP, "org.kde.kdecoration2")
 
 
+class TestAuroraeScaledVariants(unittest.TestCase):
+    """_x1.25 and _x1.5 variants that scaled the art but not the layout."""
+
+    def _theme(self, name: str, rc_body: str, art: str = "<svg/>") -> Path:
+        root = Path(self.tmp.name) / name
+        root.mkdir()
+        (root / f"{name}rc").write_text(rc_body)
+        (root / "decoration.svg").write_text(art)
+        return root
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_identical_layout_metrics_are_flagged(self):
+        rc = "[Layout]\nTitleHeight=16\nPaddingTop=36\n"
+        self._theme("WhiteSur-dark", rc)
+        scaled = self._theme("WhiteSur-dark_x1.25", rc)
+        detail = resolve.aurorae_scale_mismatch(scaled)
+        self.assertIn("1.25", detail)
+        self.assertIn("WhiteSur-dark", detail)
+
+    def test_properly_scaled_variant_is_not_flagged(self):
+        self._theme("Foo", "[Layout]\nTitleHeight=16\nPaddingTop=36\n")
+        scaled = self._theme("Foo_x1.5", "[Layout]\nTitleHeight=24\nPaddingTop=54\n")
+        self.assertEqual(resolve.aurorae_scale_mismatch(scaled), "")
+
+    def test_variant_with_no_sibling_is_not_flagged(self):
+        lonely = self._theme("Orphan_x1.25", "[Layout]\nTitleHeight=16\n")
+        self.assertEqual(resolve.aurorae_scale_mismatch(lonely), "")
+
+    def test_ordinary_theme_name_is_not_flagged(self):
+        plain = self._theme("Layan", "[Layout]\nTitleHeight=15\n")
+        self.assertEqual(resolve.aurorae_scale_mismatch(plain), "")
+
+
 def _any_installed_aurorae_theme() -> str | None:
     for base in paths.data_dirs():
         themes = base / "aurorae/themes"
